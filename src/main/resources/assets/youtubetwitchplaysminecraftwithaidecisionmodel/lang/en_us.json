@@ -1,0 +1,13 @@
+{
+  "itemGroup.youtubetwitchplaysminecraftwithaidecisionmodel": "Example Mod Tab",
+  "block.youtubetwitchplaysminecraftwithaidecisionmodel.example_block": "Example Block",
+  "item.youtubetwitchplaysminecraftwithaidecisionmodel.example_item": "Example Item",
+
+  "youtubetwitchplaysminecraftwithaidecisionmodel.configuration.title": "YouTube Twitch Plays Minecraft with AI Decision Model Configs",
+  "youtubetwitchplaysminecraftwithaidecisionmodel.configuration.section.youtubetwitchplaysminecraftwithaidecisionmodel.common.toml": "YouTube Twitch Plays Minecraft with AI Decision Model Configs",
+  "youtubetwitchplaysminecraftwithaidecisionmodel.configuration.section.youtubetwitchplaysminecraftwithaidecisionmodel.common.toml.title": "YouTube Twitch Plays Minecraft with AI Decision Model Configs",
+  "youtubetwitchplaysminecraftwithaidecisionmodel.configuration.items": "Item List",
+  "youtubetwitchplaysminecraftwithaidecisionmodel.configuration.logDirtBlock": "Log Dirt Block",
+  "youtubetwitchplaysminecraftwithaidecisionmodel.configuration.magicNumberIntroduction": "Magic Number Text",
+  "youtubetwitchplaysminecraftwithaidecisionmodel.configuration.magicNumber": "Magic Number"
+}
