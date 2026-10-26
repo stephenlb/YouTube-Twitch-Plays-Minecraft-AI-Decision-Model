@@ -10,6 +10,18 @@ import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 
+import net.minecraft.resources.Identifier;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.RegisterGuiLayersEvent;
+
+import net.minecraft.network.chat.Component;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.concurrent.CompletableFuture;
+
 // This class will not load on dedicated servers. Accessing client side code from here is safe.
 @Mod(value = YouTubeTwitchPlaysMinecraftwithAIDecisionModel.MODID, dist = Dist.CLIENT)
 // You can use EventBusSubscriber to automatically register all static methods in the class annotated with @SubscribeEvent
@@ -28,4 +40,69 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("HELLO FROM CLIENT SETUP");
         YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("MINECRAFT NAME >> {}", Minecraft.getInstance().getUser().getName());
     }
+
+    private static int clientTicks = 0;
+    private static int timerSeconds = 30;
+
+    static void sendAsyncGetRequest() {
+        //GET /subscribe/:sub_key/:channel/:callback/:timetoken
+        //GET /subscribe/:sub_key/:channel/:callback/:timetoken
+        //GET /subscribe/:sub_key/:channel/:callback/:timetoken
+        String timetoken = "1000";
+        String endpoint = "https://ps.pndsn.com";
+        String channel = System.getenv("YOUTUBE_TWITCH_CHANNEL");
+        String url = endpoint + "/subscribe/demo/" + channel + "/0/" + timetoken;
+
+        Minecraft mc1 = Minecraft.getInstance();
+        mc1.player.sendSystemMessage(Component.literal("000000000000000000"));
+	HttpClient client = HttpClient.newHttpClient();
+	HttpRequest request = HttpRequest.newBuilder()
+		.uri(URI.create(url))
+		//.header("Content-Type", "application/json")
+		.GET()
+		.build();
+        
+	client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+	      .thenAccept(response -> {
+		  // Handle response here (note: this is on an async thread, 
+		  // use ServerLevel.getServer().execute() if you need to interact with the world/game state)
+                  String resp = response.body();
+		  System.out.println("Response: " + resp);
+                  Minecraft mc = Minecraft.getInstance();
+                  mc.player.sendSystemMessage(Component.literal("111111111111111"));
+                  mc.player.sendSystemMessage(Component.literal(
+                      "Response: " + resp
+                  ));
+                  mc.player.sendSystemMessage(Component.literal("22222222222222222"));
+	      });
+    }
+
+
+    @SubscribeEvent
+    static void registerGuiLayers(RegisterGuiLayersEvent event) {
+        event.registerAboveAll(
+            Identifier.fromNamespaceAndPath(YouTubeTwitchPlaysMinecraftwithAIDecisionModel.MODID, "ai_timer"),
+            (guiGraphics, deltaTracker) -> {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc.gui.hud.isHidden() || mc.player == null) return;
+
+                if (clientTicks++ % 500 == 0) {
+                    //client.sendAsync( request, HttpResponse.BodyHandlers.ofString() );
+                    mc.player.sendSystemMessage(Component.literal("[DEBUG] Starting!" + clientTicks));
+                    sendAsyncGetRequest();
+                }
+
+                /*
+                if (++clientTicks % 200 == 0) {
+                    mc.player.sendSystemMessage(Component.literal("[DEBUG] HELLO____!" + clientTicks));
+                }
+                */
+                String label = "HELLO Youtube and Twtich Chat!!!!! Timer: " + timerSeconds + "s";
+                // X = 10, Y = 10, Color = 0xFFFFFFFF (White), dropShadow = true
+                guiGraphics.text(mc.font, label, 10, 10, 0xFFFFFFFF, true);
+            }
+        );
+    }
+
+
 }

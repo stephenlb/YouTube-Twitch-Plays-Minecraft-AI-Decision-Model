@@ -1,0 +1,93 @@
+package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
+
+import net.minecraft.client.Minecraft;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.ModContainer;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
+import net.neoforged.neoforge.client.gui.ConfigurationScreen;
+import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
+
+import net.minecraft.resources.Identifier;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.RegisterGuiLayersEvent;
+
+import net.minecraft.network.chat.Component;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.concurrent.CompletableFuture;
+
+// This class will not load on dedicated servers. Accessing client side code from here is safe.
+@Mod(value = YouTubeTwitchPlaysMinecraftwithAIDecisionModel.MODID, dist = Dist.CLIENT)
+// You can use EventBusSubscriber to automatically register all static methods in the class annotated with @SubscribeEvent
+@EventBusSubscriber(modid = YouTubeTwitchPlaysMinecraftwithAIDecisionModel.MODID, value = Dist.CLIENT)
+public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
+    public YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient(ModContainer container) {
+        // Allows NeoForge to create a config screen for this mod's configs.
+        // The config screen is accessed by going to the Mods screen > clicking on your mod > clicking on config.
+        // Do not forget to add translations for your config options to the en_us.json file.
+        container.registerExtensionPoint(IConfigScreenFactory.class, ConfigurationScreen::new);
+    }
+
+    @SubscribeEvent
+    static void onClientSetup(FMLClientSetupEvent event) {
+        // Some client setup code
+        YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("HELLO FROM CLIENT SETUP");
+        YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("MINECRAFT NAME >> {}", Minecraft.getInstance().getUser().getName());
+    }
+
+    private static int clientTicks = 0;
+    private static int timerSeconds = 30;
+
+    static void sendAsyncGetRequest() {
+	HttpClient client = HttpClient.newHttpClient();
+	HttpRequest request = HttpRequest.newBuilder()
+		.uri(URI.create("https://ps.pndsn.com/time/0"))
+		//.header("Content-Type", "application/json")
+		.GET()
+		.build();
+
+        
+        Minecraft mc = Minecraft.getInstance();
+	client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+	      .thenAccept(response -> {
+		  // Handle response here (note: this is on an async thread, 
+		  // use ServerLevel.getServer().execute() if you need to interact with the world/game state)
+		  System.out.println("Response: " + response.body());
+                  mc.player.sendSystemMessage(Component.literal(
+                      "Response: " + response.body()
+                  ));
+	      });
+    }
+
+
+    @SubscribeEvent
+    static void registerGuiLayers(RegisterGuiLayersEvent event) {
+        event.registerAboveAll(
+            Identifier.fromNamespaceAndPath(YouTubeTwitchPlaysMinecraftwithAIDecisionModel.MODID, "ai_timer"),
+            (guiGraphics, deltaTracker) -> {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc.gui.hud.isHidden() || mc.player == null) return;
+
+                if (clientTicks == 100) {
+                    //client.sendAsync( request, HttpResponse.BodyHandlers.ofString() );
+                    sendAsyncGetRequest();
+                }
+
+                if (++clientTicks % 200 == 0) {
+                    mc.player.sendSystemMessage(Component.literal("[DEBUG] HELLO____!" + clientTicks));
+                }
+                String label = "HELLO Youtube and Twtich Chat!!!!! Timer: " + timerSeconds + "s";
+                // X = 10, Y = 10, Color = 0xFFFFFFFF (White), dropShadow = true
+                guiGraphics.text(mc.font, label, 10, 10, 0xFFFFFFFF, true);
+            }
+        );
+    }
+
+
+}

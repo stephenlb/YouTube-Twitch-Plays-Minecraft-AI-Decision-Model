@@ -26,6 +26,7 @@ sourceSets.main.resources {
 }
 
 repositories {
+    //maven { url 'https://maven.tysontheember.dev' }
     // Add here additional repositories if required by some of the dependencies below.
 }
 
@@ -103,6 +104,7 @@ dependencies {
     // And its provides the option to then use net.minecraft as the group, and one of; client, server or joined as the module name, plus the game version as version.
     // For all intends and purposes: You can treat this dependency as if it is a normal library you would use.
     implementation "net.neoforged:neoforge:${neo_version}"
+    //implementation 'net.tysontheember.emberstextapi:emberstextapi-neoforge-26.2:3.0.4'
 
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
