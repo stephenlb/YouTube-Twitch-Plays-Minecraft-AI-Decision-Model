@@ -1,5 +1,19 @@
 package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 
+// TODO are you going to use
+// TODO net.minecraft.network.chat.TextColor ?
+// TODO public static final TextColor GOLD = TextColor.fromRgb(0xD4AF37);
+
+import java.util.List;
+import java.util.Map;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.Gson;
+
+import net.minecraft.util.GsonHelper;
+
 import net.minecraft.client.Minecraft;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -41,42 +55,71 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("MINECRAFT NAME >> {}", Minecraft.getInstance().getUser().getName());
     }
 
-    private static int clientTicks = 0;
-    private static int timerSeconds = 30;
+    // TODO JSON Parse
+    private static String timetoken = "1000";
+    private static boolean subscribed = false;
 
     static void sendAsyncGetRequest() {
         //GET /subscribe/:sub_key/:channel/:callback/:timetoken
         //GET /subscribe/:sub_key/:channel/:callback/:timetoken
         //GET /subscribe/:sub_key/:channel/:callback/:timetoken
-        String timetoken = "1000";
         String endpoint = "https://ps.pndsn.com";
         String channel = System.getenv("YOUTUBE_TWITCH_CHANNEL");
         String url = endpoint + "/subscribe/demo/" + channel + "/0/" + timetoken;
+        //String url = endpoint + "/time/0";
 
         Minecraft mc1 = Minecraft.getInstance();
-        mc1.player.sendSystemMessage(Component.literal("000000000000000000"));
 	HttpClient client = HttpClient.newHttpClient();
 	HttpRequest request = HttpRequest.newBuilder()
 		.uri(URI.create(url))
-		//.header("Content-Type", "application/json")
 		.GET()
 		.build();
         
+        // [[{"user":"@QuickfixKBPAWER","message":"erik say hi","platform":"youtube_account"},{"user":"@kailevia","message":"so nice to see sm1 not use AI to code 😊","platform":"youtube_account"}],"17931151713075151"]
 	client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-	      .thenAccept(response -> {
-		  // Handle response here (note: this is on an async thread, 
-		  // use ServerLevel.getServer().execute() if you need to interact with the world/game state)
-                  String resp = response.body();
-		  System.out.println("Response: " + resp);
+	      .thenAccept(resp -> {
+                  String response = resp.body();
+                  JsonArray rootArray = new Gson().fromJson(response, JsonArray.class);
+                  JsonArray chatArray = rootArray.get(0).getAsJsonArray();
+                  String tt = rootArray.get(1).getAsString();
+                  //timetoken = tt;
+                  // TODO JSON Parse
+                  // TODO capture the Timetoken 
+                  // TODO 
+                  YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("Response: {}", response);
+                  // Chat is not thread-safe: hop back to the client thread.
                   Minecraft mc = Minecraft.getInstance();
-                  mc.player.sendSystemMessage(Component.literal("111111111111111"));
-                  mc.player.sendSystemMessage(Component.literal(
-                      "Response: " + resp
-                  ));
-                  mc.player.sendSystemMessage(Component.literal("22222222222222222"));
+                  mc.execute(() -> {
+                      if (mc.player == null) return;
+                      for (JsonElement element : chatArray) {
+                          JsonObject chatObject = element.getAsJsonObject();
+                          String user = chatObject.get("user").getAsString();
+                          String message = chatObject.get("message").getAsString();
+                          String platform = chatObject.get("platform").getAsString();
+                          mc.player.sendSystemMessage(Component.literal(user  + ": " + message));
+                      }
+                  });
+	      })
+	      .exceptionally(ex -> {
+                  YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.error("Request FAILED", ex);
+                  return null;
 	      });
     }
 
+    private static int clientTicks = 0;
+
+    @SubscribeEvent
+    static void onClientTick(ClientTickEvent.Post event) {
+        // TODO Check if subscription is active
+        Minecraft mc = Minecraft.getInstance();
+        if (clientTicks % 10 == 0) {
+            YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("clientTicks: {} {}", clientTicks, mc.player);
+        }
+        if (mc.player == null) return;
+        if (clientTicks++ % 100 == 0) {
+            sendAsyncGetRequest();
+        }
+    }
 
     @SubscribeEvent
     static void registerGuiLayers(RegisterGuiLayersEvent event) {
@@ -85,24 +128,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             (guiGraphics, deltaTracker) -> {
                 Minecraft mc = Minecraft.getInstance();
                 if (mc.gui.hud.isHidden() || mc.player == null) return;
-
-                if (clientTicks++ % 500 == 0) {
-                    //client.sendAsync( request, HttpResponse.BodyHandlers.ofString() );
-                    mc.player.sendSystemMessage(Component.literal("[DEBUG] Starting!" + clientTicks));
-                    sendAsyncGetRequest();
-                }
-
-                /*
-                if (++clientTicks % 200 == 0) {
-                    mc.player.sendSystemMessage(Component.literal("[DEBUG] HELLO____!" + clientTicks));
-                }
-                */
-                String label = "HELLO Youtube and Twtich Chat!!!!! Timer: " + timerSeconds + "s";
+                String label = "HELLO Youtube and Twtich Chat!!!!!";
                 // X = 10, Y = 10, Color = 0xFFFFFFFF (White), dropShadow = true
-                guiGraphics.text(mc.font, label, 10, 10, 0xFFFFFFFF, true);
+                guiGraphics.text(mc.font, label, 10, 10, 0xFFFF2222, true);
             }
         );
     }
-
 
 }

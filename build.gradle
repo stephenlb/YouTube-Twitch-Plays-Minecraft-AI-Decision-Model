@@ -26,6 +26,7 @@ sourceSets.main.resources {
 }
 
 repositories {
+    mavenCentral()
     //maven { url 'https://maven.tysontheember.dev' }
     // Add here additional repositories if required by some of the dependencies below.
 }
@@ -65,6 +66,7 @@ runs {
     client {
         // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
         systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        environmentVariable 'YOUTUBE_TWITCH_CHANNEL', System.getenv('YOUTUBE_TWITCH_CHANNEL') ?: ''
     }
 
     server {
@@ -104,6 +106,7 @@ dependencies {
     // And its provides the option to then use net.minecraft as the group, and one of; client, server or joined as the module name, plus the game version as version.
     // For all intends and purposes: You can treat this dependency as if it is a normal library you would use.
     implementation "net.neoforged:neoforge:${neo_version}"
+    implementation 'com.pubnub:pubnub-gson:14.1.0'
     //implementation 'net.tysontheember.emberstextapi:emberstextapi-neoforge-26.2:3.0.4'
 
     // Example optional mod dependency with JEI
