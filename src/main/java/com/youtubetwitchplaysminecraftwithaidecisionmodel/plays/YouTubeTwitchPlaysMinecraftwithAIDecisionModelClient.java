@@ -3,6 +3,8 @@ package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 // TODO are you going to use
 // TODO net.minecraft.network.chat.TextColor ?
 // TODO public static final TextColor GOLD = TextColor.fromRgb(0xD4AF37);
+// TODO add NeoForge Logo
+// TODO bits - when donos Deena - do somethign in the game
 
 import java.util.List;
 import java.util.Map;
@@ -29,6 +31,8 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterGuiLayersEvent;
 
 import net.minecraft.network.chat.Component;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.TextColor;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -59,10 +63,8 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     private static String timetoken = "1000";
     private static boolean subscribed = false;
 
-    static void sendAsyncGetRequest() {
-        //GET /subscribe/:sub_key/:channel/:callback/:timetoken
-        //GET /subscribe/:sub_key/:channel/:callback/:timetoken
-        //GET /subscribe/:sub_key/:channel/:callback/:timetoken
+    static void subscribe() {
+        subscribed = true;
         String endpoint = "https://ps.pndsn.com";
         String channel = System.getenv("YOUTUBE_TWITCH_CHANNEL");
         String url = endpoint + "/subscribe/demo/" + channel + "/0/" + timetoken;
@@ -78,16 +80,15 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         // [[{"user":"@QuickfixKBPAWER","message":"erik say hi","platform":"youtube_account"},{"user":"@kailevia","message":"so nice to see sm1 not use AI to code 😊","platform":"youtube_account"}],"17931151713075151"]
 	client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
 	      .thenAccept(resp -> {
+                  subscribed = false;
                   String response = resp.body();
                   JsonArray rootArray = new Gson().fromJson(response, JsonArray.class);
                   JsonArray chatArray = rootArray.get(0).getAsJsonArray();
                   String tt = rootArray.get(1).getAsString();
-                  //timetoken = tt;
-                  // TODO JSON Parse
-                  // TODO capture the Timetoken 
-                  // TODO 
+                  timetoken = tt;
+
                   YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("Response: {}", response);
-                  // Chat is not thread-safe: hop back to the client thread.
+
                   Minecraft mc = Minecraft.getInstance();
                   mc.execute(() -> {
                       if (mc.player == null) return;
@@ -96,11 +97,15 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                           String user = chatObject.get("user").getAsString();
                           String message = chatObject.get("message").getAsString();
                           String platform = chatObject.get("platform").getAsString();
-                          mc.player.sendSystemMessage(Component.literal(user  + ": " + message));
+                          mc.player.sendSystemMessage(
+                              Component.literal(user).withStyle(ChatFormatting.GOLD)
+                              .append(Component.literal(": " + message).withStyle(ChatFormatting.WHITE))
+                        );
                       }
                   });
 	      })
 	      .exceptionally(ex -> {
+                  subscribed = false;
                   YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.error("Request FAILED", ex);
                   return null;
 	      });
@@ -112,13 +117,16 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     static void onClientTick(ClientTickEvent.Post event) {
         // TODO Check if subscription is active
         Minecraft mc = Minecraft.getInstance();
+        /*
         if (clientTicks % 10 == 0) {
             YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("clientTicks: {} {}", clientTicks, mc.player);
         }
+        */
         if (mc.player == null) return;
-        if (clientTicks++ % 100 == 0) {
-            sendAsyncGetRequest();
-        }
+        if (subscribed) return;
+        //if (clientTicks++ % 100 == 0) {
+        subscribe();
+        //}
     }
 
     @SubscribeEvent
@@ -128,7 +136,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             (guiGraphics, deltaTracker) -> {
                 Minecraft mc = Minecraft.getInstance();
                 if (mc.gui.hud.isHidden() || mc.player == null) return;
-                String label = "HELLO Youtube and Twtich Chat!!!!!";
+                String label = "HELLO Youtube and Twitch Chat!!!!!";
                 // X = 10, Y = 10, Color = 0xFFFFFFFF (White), dropShadow = true
                 guiGraphics.text(mc.font, label, 10, 10, 0xFFFF2222, true);
             }
