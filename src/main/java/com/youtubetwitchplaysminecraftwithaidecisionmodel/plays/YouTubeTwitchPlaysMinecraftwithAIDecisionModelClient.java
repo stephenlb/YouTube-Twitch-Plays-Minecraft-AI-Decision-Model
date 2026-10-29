@@ -7,6 +7,7 @@ package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 // TODO bits - when donos Deena - do somethign in the game
 
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 
 import com.google.gson.JsonArray;
@@ -62,6 +63,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     // TODO JSON Parse
     private static String timetoken = "1000";
     private static boolean subscribed = false;
+    private static List<String> chatMessages = new ArrayList<>();
 
     static void subscribe() {
         subscribed = true;
@@ -97,6 +99,9 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                           String user = chatObject.get("user").getAsString();
                           String message = chatObject.get("message").getAsString();
                           String platform = chatObject.get("platform").getAsString();
+
+                          chatMessages.add(user + ": " + message);
+
                           mc.player.sendSystemMessage(
                               Component.literal(user).withStyle(ChatFormatting.GOLD)
                               .append(Component.literal(": " + message).withStyle(ChatFormatting.WHITE))
@@ -134,11 +139,24 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         event.registerAboveAll(
             Identifier.fromNamespaceAndPath(YouTubeTwitchPlaysMinecraftwithAIDecisionModel.MODID, "ai_timer"),
             (guiGraphics, deltaTracker) -> {
+                // TODO  static the mc instance
                 Minecraft mc = Minecraft.getInstance();
                 if (mc.gui.hud.isHidden() || mc.player == null) return;
-                String label = "HELLO Youtube and Twitch Chat!!!!!";
-                // X = 10, Y = 10, Color = 0xFFFFFFFF (White), dropShadow = true
-                guiGraphics.text(mc.font, label, 10, 10, 0xFFFF2222, true);
+                String label = "HELLO Youtube\n\r and \r\nTwitch Chat!!!!!";
+                int rightMargin = guiGraphics.guiWidth(); 
+                //int rightMargin = 200;
+                int textWidth = mc.font.width(label);
+                int xPosition = rightMargin - textWidth - 100;
+                guiGraphics.text(mc.font, label, xPosition, 10, 0xFFFF2222, true);
+
+                int xChatPos = 0;
+                int yChatPos = 0;
+                List<String> chats = chatMessages.reversed();
+                //§cQ§6U§eI§aC§bK§3F§dI§5X§r is the best
+                for (String msg : chats.subList(0, Math.min(10, chats.size())).reversed()) {
+                    guiGraphics.text(mc.font, msg, xChatPos, yChatPos, 0xFFFFFFFF, true);
+                    yChatPos += 11;
+                }
             }
         );
     }
