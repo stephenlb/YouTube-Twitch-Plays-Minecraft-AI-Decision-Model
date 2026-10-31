@@ -16,8 +16,15 @@ import com.google.gson.JsonObject;
 import com.google.gson.Gson;
 
 import net.minecraft.util.GsonHelper;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.entity.player.Input;
+import net.neoforged.neoforge.client.event.MovementInputUpdateEvent;
+import net.minecraft.world.phys.Vec2;
+import net.minecraft.client.Options;
+import net.minecraft.client.player.KeyboardInput;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.player.Input;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
@@ -59,11 +66,25 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("HELLO FROM CLIENT SETUP");
         YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("MINECRAFT NAME >> {}", Minecraft.getInstance().getUser().getName());
     }
+    // TODO op.awMelon: Birdflop is a website that shows you which colour corresponds to which symbol. I thought it might be helpful! You should also check out resources for mods, as you can use custom fonts, textures, and even custom emojis.
 
     // TODO JSON Parse
     private static String timetoken = "1000";
     private static boolean subscribed = false;
     private static List<String> chatMessages = new ArrayList<>();
+    private static Map<String, String> playerColors = Map.of(
+        "@AronDenBasta", "§2",
+        "@UnKitty2", "§9",
+        "@QuickfixKBPAWER", "§5",
+        "@ilovemydogKBPAWER", "§5",
+        "@catguyYT", "§a",
+        "lecaptnsky", "§3",
+        "stephenlb", "§4",
+        "@StephenBlum", "§4",
+        "@Neon_AI_Lab", "§1",
+        "@Codemitsu888", "§7"
+    );
+    /// @QuickfixKBPAWER §6§lMINECRAFT COLORS: §r§00 §1DarkBlue §2Green §3Cyan §4Red §5Purple §6Gold §7Gray §8DarkGray §9Blue §aLime §bAqua §cRed §dPink §eYellow §fWhite
 
     static void subscribe() {
         subscribed = true;
@@ -100,7 +121,19 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                           String message = chatObject.get("message").getAsString();
                           String platform = chatObject.get("platform").getAsString();
 
-                          chatMessages.add(user + ": " + message);
+                          // TODO Name change dictinoary
+                          // TODO Translate to english
+                          // TODO per-user color lookup hashmapp
+
+                          // AronDenBasta = Green
+                          // UnKitty = Blue
+                          // LeCAPTNSky = Cyan §b
+                          // Quickfix = Purple
+                          //§cQ§6U§eI§aC§bK§3F§dI§5X§r is the best
+                          // Maybe red names for YT texts and Purple For Twitch? ( Disruptor / ThatOneUnknownBear)
+
+                          String color = playerColors.getOrDefault(user, "§c");
+                          chatMessages.add(color + user + "§r: §6" + message);
 
                           mc.player.sendSystemMessage(
                               Component.literal(user).withStyle(ChatFormatting.GOLD)
@@ -118,10 +151,43 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
     private static int clientTicks = 0;
 
+    /** Keyboard input that is always pushing forward (other keys still work). */
+    private static class ForcedForwardInput extends KeyboardInput {
+        ForcedForwardInput(Options options) {
+            super(options);
+        }
+
+        @Override
+        public void tick() {
+            super.tick();
+            Input k = this.keyPresses;
+            this.keyPresses = new Input(true, k.backward(), k.left(), k.right(), k.jump(), k.shift(), k.sprint());
+            // Recompute the move vector the physics actually reads (forward cancels backward).
+            float left = k.left() == k.right() ? 0f : (k.left() ? 1f : -1f);
+            float forward = k.backward() ? 0f : 1f;
+            this.moveVector = new Vec2(left, forward).normalized();
+        }
+    }
+
     @SubscribeEvent
     static void onClientTick(ClientTickEvent.Post event) {
         // TODO Check if subscription is active
         Minecraft mc = Minecraft.getInstance();
+        LocalPlayer player = mc.player;
+        //LocalPlayer player = Minecraft.getInstance().player;
+        /*
+        if (player != null) {
+            //player.input.forwardImpulsemovementForward = 1.0f; // Force move forward
+            player.input.keyPresses = new Input(true, false, false, false, false, false, false);
+        }
+        */
+        //if (false && player != null && mc.screen == null) {
+        if (player != null && !(player.input instanceof ForcedForwardInput)) {
+            // Swap in an input source that always holds "forward". LocalPlayer ticks this itself,
+            // so movement goes through normal physics (collisions, sprint, step-up, etc).
+            player.input = new ForcedForwardInput(mc.options);
+        }
+
         /*
         if (clientTicks % 10 == 0) {
             YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("clientTicks: {} {}", clientTicks, mc.player);
@@ -151,7 +217,12 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
                 int xChatPos = 0;
                 int yChatPos = 0;
+                // TODO only prune the list when .add occurs
                 List<String> chats = chatMessages.reversed();
+                // Color chat messages
+                // Alerts and notifications 
+                // Player Controls
+                // @tag lightblue bold
                 //§cQ§6U§eI§aC§bK§3F§dI§5X§r is the best
                 for (String msg : chats.subList(0, Math.min(10, chats.size())).reversed()) {
                     guiGraphics.text(mc.font, msg, xChatPos, yChatPos, 0xFFFFFFFF, true);
@@ -161,4 +232,31 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         );
     }
 
+    /*
+    @SubscribeEvent
+    static void onMovementInputUpdate(MovementInputUpdateEvent event) {
+        // TODO Check if subscription is active
+        
+        // Instead of fetching from Minecraft.getInstance(), use the event's built-in player context
+        LocalPlayer player = event.getEntity(); 
+        
+        if (player != null) {
+            // This completely overrides the keyboard state right before physics calculation
+            player.input.keyPresses = new Input(true, false, false, false, false, false, false);
+        }
+    }
+    */
+
+
+    /*
+    @SubscribeEvent
+    static void onMovementInputUpdate(MovementInputUpdateEvent event) {
+        // TODO Check if subscription is active
+        
+        // Check if the entity updating their movement is the local client player
+        if (event.getEntity() instanceof LocalPlayer player) {
+            // Apply your forced forward movement
+            player.input.keyPresses = new Input(true, false, false, false, false, false, false);
+        }
+    }*/
 }
