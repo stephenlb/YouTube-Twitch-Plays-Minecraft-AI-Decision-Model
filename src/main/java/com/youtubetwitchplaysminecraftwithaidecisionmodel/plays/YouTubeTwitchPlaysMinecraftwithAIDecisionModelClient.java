@@ -1,5 +1,17 @@
 package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 
+// TODO add parser to set number of BLOCKS player moves
+// TODO ✅ only prune the list when .add occurs
+// TODO for loop on playerCommands and execyte all commands at same time
+// TODO decremetn playerCommands ticks and then remove at 0 tick remaining
+// TODO - idea from quickfix - website where you can control the game
+
+// TODO op.awMelon: Birdflop is a website that shows you which colour corresponds to which symbol. I thought it might be helpful! You should also check out resources for mods, as you can use custom fonts, textures, and even custom emojis.
+// TODO Name change dictinoary
+// TODO Translate to english
+// TODO per-user color lookup hashmapp
+
+
 // TODO are you going to use
 // TODO net.minecraft.network.chat.TextColor ?
 // TODO public static final TextColor GOLD = TextColor.fromRgb(0xD4AF37);
@@ -9,6 +21,7 @@ package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -66,9 +79,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("HELLO FROM CLIENT SETUP");
         YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("MINECRAFT NAME >> {}", Minecraft.getInstance().getUser().getName());
     }
-    // TODO op.awMelon: Birdflop is a website that shows you which colour corresponds to which symbol. I thought it might be helpful! You should also check out resources for mods, as you can use custom fonts, textures, and even custom emojis.
 
-    // TODO JSON Parse
     private static String timetoken = "1000";
     private static boolean subscribed = false;
     private static List<String> chatMessages = new ArrayList<>();
@@ -85,6 +96,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         "@Codemitsu888", "§7"
     );
     /// @QuickfixKBPAWER §6§lMINECRAFT COLORS: §r§00 §1DarkBlue §2Green §3Cyan §4Red §5Purple §6Gold §7Gray §8DarkGray §9Blue §aLime §bAqua §cRed §dPink §eYellow §fWhite
+
+    // Array<Map<String, int>> 
+    //private static Array<Map<String, int>> playerCommands new ArrayList<>();
+    //private static Map<String, int> playerCommands new LinkedHashMap<>();
+
 
     static void subscribe() {
         subscribed = true;
@@ -121,9 +137,8 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                           String message = chatObject.get("message").getAsString();
                           String platform = chatObject.get("platform").getAsString();
 
-                          // TODO Name change dictinoary
-                          // TODO Translate to english
-                          // TODO per-user color lookup hashmapp
+                          // Check for player commands
+                          youtubeTwitchCommands(message);
 
                           // AronDenBasta = Green
                           // UnKitty = Blue
@@ -134,6 +149,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
                           String color = playerColors.getOrDefault(user, "§c");
                           chatMessages.add(color + user + "§r: §6" + message);
+
+                          // Only keep last 10 messages
+                          if (chatMessages.size() >= 10) {
+                              chatMessages.remove(0);
+                          }
 
                           mc.player.sendSystemMessage(
                               Component.literal(user).withStyle(ChatFormatting.GOLD)
@@ -149,55 +169,47 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 	      });
     }
 
-    private static int clientTicks = 0;
+    @SubscribeEvent
+    static void onClientTick(ClientTickEvent.Post event) {
+        Minecraft mc = Minecraft.getInstance();
+        //LocalPlayer player = mc.player;
+        if (!subscribed) subscribe();
+        if (mc == null) return;
 
-    /** Keyboard input that is always pushing forward (other keys still work). */
-    private static class ForcedForwardInput extends KeyboardInput {
-        ForcedForwardInput(Options options) {
-            super(options);
-        }
+        for (Map.Entry<String, Integer> command : playerCommands.entrySet()) {
+            String action = command.getKey();
+            int frames = command.getValue() - 1;
+            boolean direction = true;
 
-        @Override
-        public void tick() {
-            super.tick();
-            Input k = this.keyPresses;
-            this.keyPresses = new Input(true, k.backward(), k.left(), k.right(), k.jump(), k.shift(), k.sprint());
-            // Recompute the move vector the physics actually reads (forward cancels backward).
-            float left = k.left() == k.right() ? 0f : (k.left() ? 1f : -1f);
-            float forward = k.backward() ? 0f : 1f;
-            this.moveVector = new Vec2(left, forward).normalized();
+            YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.error("Command:" + action + "Frames:" + Integer.toString(frames));
+
+            if (frames <= 0) {
+                playerCommands.remove(action);
+                direction = false;
+            }
+            else {
+                command.setValue(frames);
+            } 
+
+            switch (action) {
+                case "forward":
+                    mc.options.keyUp.setDown(direction);
+                    break;
+                case "backward":
+                    mc.options.keyDown.setDown(direction);
+                    break;
+            }
         }
     }
 
-    @SubscribeEvent
-    static void onClientTick(ClientTickEvent.Post event) {
-        // TODO Check if subscription is active
-        Minecraft mc = Minecraft.getInstance();
-        LocalPlayer player = mc.player;
-        //LocalPlayer player = Minecraft.getInstance().player;
-        /*
-        if (player != null) {
-            //player.input.forwardImpulsemovementForward = 1.0f; // Force move forward
-            player.input.keyPresses = new Input(true, false, false, false, false, false, false);
+    private static Map<String, Integer> playerCommands = new LinkedHashMap<>();
+    static void youtubeTwitchCommands(String message) {
+        if (message.contains("forward")) {
+            playerCommands.put("forward", 100);
         }
-        */
-        //if (false && player != null && mc.screen == null) {
-        if (player != null && !(player.input instanceof ForcedForwardInput)) {
-            // Swap in an input source that always holds "forward". LocalPlayer ticks this itself,
-            // so movement goes through normal physics (collisions, sprint, step-up, etc).
-            player.input = new ForcedForwardInput(mc.options);
+        if (message.contains("backward")) {
+            playerCommands.put("backward", 100);
         }
-
-        /*
-        if (clientTicks % 10 == 0) {
-            YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("clientTicks: {} {}", clientTicks, mc.player);
-        }
-        */
-        if (mc.player == null) return;
-        if (subscribed) return;
-        //if (clientTicks++ % 100 == 0) {
-        subscribe();
-        //}
     }
 
     @SubscribeEvent
@@ -205,58 +217,23 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         event.registerAboveAll(
             Identifier.fromNamespaceAndPath(YouTubeTwitchPlaysMinecraftwithAIDecisionModel.MODID, "ai_timer"),
             (guiGraphics, deltaTracker) -> {
-                // TODO  static the mc instance
                 Minecraft mc = Minecraft.getInstance();
                 if (mc.gui.hud.isHidden() || mc.player == null) return;
-                String label = "HELLO Youtube\n\r and \r\nTwitch Chat!!!!!";
+                String label = "HELLO YOUTUBE and TWITCH Chat";
                 int rightMargin = guiGraphics.guiWidth(); 
-                //int rightMargin = 200;
                 int textWidth = mc.font.width(label);
                 int xPosition = rightMargin - textWidth - 100;
-                guiGraphics.text(mc.font, label, xPosition, 10, 0xFFFF2222, true);
+                guiGraphics.text(mc.font, label, xPosition, 100, 0xFFFF2222, true);
 
                 int xChatPos = 0;
                 int yChatPos = 0;
-                // TODO only prune the list when .add occurs
-                List<String> chats = chatMessages.reversed();
-                // Color chat messages
-                // Alerts and notifications 
-                // Player Controls
-                // @tag lightblue bold
+                //List<String> chats = chatMessages.reversed();
                 //§cQ§6U§eI§aC§bK§3F§dI§5X§r is the best
-                for (String msg : chats.subList(0, Math.min(10, chats.size())).reversed()) {
+                for (String msg : chatMessages) {
                     guiGraphics.text(mc.font, msg, xChatPos, yChatPos, 0xFFFFFFFF, true);
                     yChatPos += 11;
                 }
             }
         );
     }
-
-    /*
-    @SubscribeEvent
-    static void onMovementInputUpdate(MovementInputUpdateEvent event) {
-        // TODO Check if subscription is active
-        
-        // Instead of fetching from Minecraft.getInstance(), use the event's built-in player context
-        LocalPlayer player = event.getEntity(); 
-        
-        if (player != null) {
-            // This completely overrides the keyboard state right before physics calculation
-            player.input.keyPresses = new Input(true, false, false, false, false, false, false);
-        }
-    }
-    */
-
-
-    /*
-    @SubscribeEvent
-    static void onMovementInputUpdate(MovementInputUpdateEvent event) {
-        // TODO Check if subscription is active
-        
-        // Check if the entity updating their movement is the local client player
-        if (event.getEntity() instanceof LocalPlayer player) {
-            // Apply your forced forward movement
-            player.input.keyPresses = new Input(true, false, false, false, false, false, false);
-        }
-    }*/
 }
