@@ -1,5 +1,7 @@
 package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 
+// TODO Movement Votinig - when ppl trigger game command to move, 
+// TODO hello youtube and twtich DVD Logo
 // TODO add parser to set number of BLOCKS player moves
 // TODO ✅ only prune the list when .add occurs
 // TODO for loop on playerCommands and execyte all commands at same time
@@ -9,11 +11,8 @@ package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 // TODO op.awMelon: Birdflop is a website that shows you which colour corresponds to which symbol. I thought it might be helpful! You should also check out resources for mods, as you can use custom fonts, textures, and even custom emojis.
 // TODO Name change dictinoary
 // TODO Translate to english
-// TODO per-user color lookup hashmapp
+// TODO ✅ per-user color lookup hashmapp
 
-
-// TODO are you going to use
-// TODO net.minecraft.network.chat.TextColor ?
 // TODO public static final TextColor GOLD = TextColor.fromRgb(0xD4AF37);
 // TODO add NeoForge Logo
 // TODO bits - when donos Deena - do somethign in the game
@@ -37,6 +36,7 @@ import net.minecraft.client.Options;
 import net.minecraft.client.player.KeyboardInput;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.world.entity.player.Input;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -181,34 +181,83 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             int frames = command.getValue() - 1;
             boolean direction = true;
 
-            YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.error("Command:" + action + "Frames:" + Integer.toString(frames));
+            //YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.error("Command:" + action + "Frames:" + Integer.toString(frames));
 
             if (frames <= 0) {
-                playerCommands.remove(action);
                 direction = false;
             }
             else {
                 command.setValue(frames);
             } 
+            /*
+            ✅ keyUp / backKey / keyLeft / keyRight — Movement controls (W, S, A, D)
+            ✅ keyJump — Jump
+            ✅ keyShift — Sneak (Crouch)
+            💜
+            TODO Hotbar 
+            keyAttack — Attack / Break block (Left-click)
+            keySprint — Sprint
+            keyInventory — Open Inventory
+            keySwapOffhand — Swap item to offhand (F)
+            keyDrop — Drop item (Q)
+            keyUse — Use item / Place block (Right-click)
+            keyPickItem — Pick block
+            keyChat — Open chat
+            keyCommand — Open command prompt
+            keySocialInteractions — Open social interactions screen (P)
+            keyPlayerList — Player list (Tab)
+            keyScreenshot — Take screenshot (F2)
+            keyTogglePerspective — F5 camera view toggle
+            keySmoothCamera — Cinematic camera toggle
+            keyFullscreen — Toggle fullscreen (F11)
+            keySpectatorOutlines — Highlight players in spectator
+            */
+            // TODO mc.options.keyInventory.setDown(true);
+            // TODO KeyMapping.click(mc.options.keyInventory.getKey()); // Increments the internal click counter
+            // TODO
+            KeyMapping key = switch (action) {
+                case "perspective" -> mc.options.keyTogglePerspective;
+                case "smooth"      -> mc.options.keySmoothCamera;
+                case "inventory"   -> mc.options.keyInventory;
+                case "attack"      -> mc.options.keyAttack;
+                case "sprint"      -> mc.options.keySprint;
+                case "jump"        -> mc.options.keyJump;
+                case "crouch"      -> mc.options.keyShift;
+                case "left"        -> mc.options.keyLeft;
+                case "right"       -> mc.options.keyRight;
+                case "forward"     -> mc.options.keyUp;
+                case "backward"    -> mc.options.keyDown;
+                default            -> null;
+            };
 
-            switch (action) {
-                case "forward":
-                    mc.options.keyUp.setDown(direction);
-                    break;
-                case "backward":
-                    mc.options.keyDown.setDown(direction);
-                    break;
+            if (key != null) {
+                key.setDown(direction);
+                /* TODO for click commands
+                for (String tgl: TOGGLES) {
+                    if (msg.contains(tgl)) {
+                    if (action in TOGGLES)
+                    KeyMapping.click(mc.options.keyInventory.getKey()); // Increments the internal click counter
+                }
+                */
             }
         }
     }
 
+    private static List<String> COMMANDS = List.of(
+        "sprint", "jump", "crouch", "right", "left",
+        "forward", "backward", "attack",
+        "inventory", "perspective", "smooth"
+    );
+    private static List<String> TOGGLES = List.of(
+        "inventory", "perspective", "smooth"
+    );
     private static Map<String, Integer> playerCommands = new LinkedHashMap<>();
     static void youtubeTwitchCommands(String message) {
-        if (message.contains("forward")) {
-            playerCommands.put("forward", 100);
-        }
-        if (message.contains("backward")) {
-            playerCommands.put("backward", 100);
+        String msg = message.toLowerCase();
+        for (String cmd: COMMANDS) {
+            if (msg.contains(cmd)) {
+                playerCommands.put(cmd, 100);
+            }
         }
     }
 
