@@ -22,6 +22,9 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.LinkedHashMap;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -97,17 +100,12 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     );
     /// @QuickfixKBPAWER §6§lMINECRAFT COLORS: §r§00 §1DarkBlue §2Green §3Cyan §4Red §5Purple §6Gold §7Gray §8DarkGray §9Blue §aLime §bAqua §cRed §dPink §eYellow §fWhite
 
-    // Array<Map<String, int>> 
-    //private static Array<Map<String, int>> playerCommands new ArrayList<>();
-    //private static Map<String, int> playerCommands new LinkedHashMap<>();
-
 
     static void subscribe() {
         subscribed = true;
         String endpoint = "https://ps.pndsn.com";
         String channel = System.getenv("YOUTUBE_TWITCH_CHANNEL");
         String url = endpoint + "/subscribe/demo/" + channel + "/0/" + timetoken;
-        //String url = endpoint + "/time/0";
 
         Minecraft mc1 = Minecraft.getInstance();
 	HttpClient client = HttpClient.newHttpClient();
@@ -215,6 +213,29 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             // TODO mc.options.keyInventory.setDown(true);
             // TODO KeyMapping.click(mc.options.keyInventory.getKey()); // Increments the internal click counter
             // TODO
+            // TODO  HOLD SHIELD
+            // TODO DRAW OVERLAY
+            // TODO
+            // TODO CLick COunter
+            // TODO
+            // TODO
+            // TODO  LOOK DOWN
+            // TODO Block Count - every   block broken increments counter
+            // TODO
+            // TODO STOP command
+            // TODO TURN ARUND command
+            // TODO /gift bread 3
+            // TODO when death block randomizes
+            // TODO Add Death Counter
+            // TODO Change Loacation command x y coords GOTO TP Telepoprt
+
+
+
+            // TODO
+            // TODO Spaw mobs
+            // TODO
+            // TODO
+            // TODO lookup lookright lookleft lookdown
             KeyMapping key = switch (action) {
                 case "perspective" -> mc.options.keyTogglePerspective;
                 case "smooth"      -> mc.options.keySmoothCamera;
@@ -245,18 +266,67 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
     private static List<String> COMMANDS = List.of(
         "sprint", "jump", "crouch", "right", "left",
-        "forward", "backward", "attack",
-        "inventory", "perspective", "smooth"
+        "forward", "backward", "attack"
     );
-    private static List<String> TOGGLES = List.of(
-        "inventory", "perspective", "smooth"
+    private static List<String> EVENTS = List.of(
+        "tp", "stop"
     );
+
+/*(
+
+
+            // group(1) extracts the key, group(2) extracts the value
+            String key = matcher.group(1);
+            String value = matcher.group(2);
+            
+            System.out.println("Argument -> Key: " + key + ", Value: " + value);
+        }
+*/
+    static List parseArgs(String command, String message) {
+        String regex = command + " +([a-z0-9]+),? +([a-z0-9]+),? +([a-z0-9]+)";
+        Pattern pattern = Pattern.compile(regex);
+        Matcher matcher = pattern.matcher(message);
+        List<String> args = new ArrayList<String>();
+        while (matcher.find()) {
+            args.add(matcher.group(1));
+            args.add(matcher.group(2));
+            args.add(matcher.group(3));
+        }
+        return args;
+    }
+    static void teleport(String command, String message) {
+        Integer x = 100;
+        Integer y = 100;
+        Integer z = 100;
+        List args = parseArgs(command, message);
+        Minecraft mc = Minecraft.getInstance();
+
+        if (mc != null) {
+            mc.player.setPos(x, y, z);
+        }
+    }
     private static Map<String, Integer> playerCommands = new LinkedHashMap<>();
     static void youtubeTwitchCommands(String message) {
         String msg = message.toLowerCase();
+        for (String event: EVENTS) {
+            if (msg.contains(event)) {
+                switch (event) {
+                    case "tp":
+                    case "teleport":
+                        teleport(event, message);
+                        break;
+                }
+            }
+        }
         for (String cmd: COMMANDS) {
             if (msg.contains(cmd)) {
-                playerCommands.put(cmd, 100);
+                Integer val = playerCommands.getOrDefault(cmd, 0);
+                if (val > 0) {
+                    playerCommands.put(cmd, 0);
+                }
+                else {
+                    playerCommands.put(cmd, 10000000);
+                }
             }
         }
     }
