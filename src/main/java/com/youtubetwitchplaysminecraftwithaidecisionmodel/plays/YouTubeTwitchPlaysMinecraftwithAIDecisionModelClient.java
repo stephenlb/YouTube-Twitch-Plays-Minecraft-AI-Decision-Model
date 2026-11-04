@@ -1,5 +1,54 @@
 package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 
+/*
+✅ keyUp / backKey / keyLeft / keyRight — Movement controls (W, S, A, D)
+✅ keyJump — Jump
+✅ keyShift — Sneak (Crouch)
+💜
+TODO Hotbar 
+keyAttack — Attack / Break block (Left-click)
+keySprint — Sprint
+keyInventory — Open Inventory
+keySwapOffhand — Swap item to offhand (F)
+keyDrop — Drop item (Q)
+keyUse — Use item / Place block (Right-click)
+keyPickItem — Pick block
+keyChat — Open chat
+keyCommand — Open command prompt
+keySocialInteractions — Open social interactions screen (P)
+keyPlayerList — Player list (Tab)
+keyScreenshot — Take screenshot (F2)
+keyTogglePerspective — F5 camera view toggle
+keySmoothCamera — Cinematic camera toggle
+keyFullscreen — Toggle fullscreen (F11)
+keySpectatorOutlines — Highlight players in spectator
+*/
+// TODO mc.options.keyInventory.setDown(true);
+// TODO KeyMapping.click(mc.options.keyInventory.getKey()); // Increments the internal click counter
+// TODO
+// TODO  HOLD SHIELD
+// TODO DRAW OVERLAY
+// TODO
+// TODO CLick COunter
+// TODO
+// TODO
+// TODO  LOOK DOWN
+// TODO Block Count - every   block broken increments counter
+// TODO
+// TODO STOP command
+// TODO TURN ARUND command
+// TODO /gift bread 3
+// TODO when death block randomizes
+// TODO Add Death Counter
+// TODO Change Loacation command x y coords GOTO TP Telepoprt
+
+
+
+// TODO
+// TODO Spaw mobs
+// TODO
+// TODO
+// TODO lookup lookright lookleft lookdown
 // TODO Movement Votinig - when ppl trigger game command to move, 
 // TODO hello youtube and twtich DVD Logo
 // TODO add parser to set number of BLOCKS player moves
@@ -20,6 +69,7 @@ package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Set;
 import java.util.LinkedHashMap;
 
 import java.util.regex.Matcher;
@@ -138,13 +188,10 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                           // Check for player commands
                           youtubeTwitchCommands(message);
 
-                          // AronDenBasta = Green
-                          // UnKitty = Blue
-                          // LeCAPTNSky = Cyan §b
-                          // Quickfix = Purple
-                          //§cQ§6U§eI§aC§bK§3F§dI§5X§r is the best
-                          // Maybe red names for YT texts and Purple For Twitch? ( Disruptor / ThatOneUnknownBear)
+                          // Run Slash Commands
+                          slashCommands(mc, message);
 
+                          // Colorize YouTube and Twitch chat
                           String color = playerColors.getOrDefault(user, "§c");
                           chatMessages.add(color + user + "§r: §6" + message);
 
@@ -167,6 +214,23 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 	      });
     }
 
+    private static final Set<String> SLASH_COMMANDS = Set.of(
+        "/tp", "/weather", "/give",
+        "/summon", "/add", "/gamemode",
+        "/time", "/effect", "/setblock",
+        "/fill", "/attribute", "/kill"
+        // "/playsound",
+        // "/worldborder"
+    );
+    static void slashCommands(Minecraft mc, String message) {
+        String command = message.trim().split(" ")[0].trim();
+        if (!SLASH_COMMANDS.contains(command)) return;
+        // Show message on screen is recoginzed by our filter
+        mc.player.connection.sendChat(message.trim());
+        // Send without slash command
+        mc.player.connection.sendCommand(message.trim().substring(1));
+    }
+
     @SubscribeEvent
     static void onClientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
@@ -176,6 +240,27 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
         for (Map.Entry<String, Integer> command : playerCommands.entrySet()) {
             String action = command.getKey();
+            // Allow for change of direction
+            /*
+            switch (action) {
+                case "forward":
+                    playerCommands.put("backward", 0);
+                    mc.options.keyDown.setDown(false);
+                    break;
+                case "backward":
+                    playerCommands.put("forward", 0);
+                    mc.options.keyUp.setDown(false);
+                    break;
+                case "left":
+                    playerCommands.put("rigth", 0);
+                    mc.options.keyRight.setDown(false);
+                    break;
+                case "right":
+                    playerCommands.put("backward", 0);
+                    mc.options.keyLeft.setDown(false);
+                    break;
+            }
+            */
             int frames = command.getValue() - 1;
             boolean direction = true;
 
@@ -187,55 +272,6 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             else {
                 command.setValue(frames);
             } 
-            /*
-            ✅ keyUp / backKey / keyLeft / keyRight — Movement controls (W, S, A, D)
-            ✅ keyJump — Jump
-            ✅ keyShift — Sneak (Crouch)
-            💜
-            TODO Hotbar 
-            keyAttack — Attack / Break block (Left-click)
-            keySprint — Sprint
-            keyInventory — Open Inventory
-            keySwapOffhand — Swap item to offhand (F)
-            keyDrop — Drop item (Q)
-            keyUse — Use item / Place block (Right-click)
-            keyPickItem — Pick block
-            keyChat — Open chat
-            keyCommand — Open command prompt
-            keySocialInteractions — Open social interactions screen (P)
-            keyPlayerList — Player list (Tab)
-            keyScreenshot — Take screenshot (F2)
-            keyTogglePerspective — F5 camera view toggle
-            keySmoothCamera — Cinematic camera toggle
-            keyFullscreen — Toggle fullscreen (F11)
-            keySpectatorOutlines — Highlight players in spectator
-            */
-            // TODO mc.options.keyInventory.setDown(true);
-            // TODO KeyMapping.click(mc.options.keyInventory.getKey()); // Increments the internal click counter
-            // TODO
-            // TODO  HOLD SHIELD
-            // TODO DRAW OVERLAY
-            // TODO
-            // TODO CLick COunter
-            // TODO
-            // TODO
-            // TODO  LOOK DOWN
-            // TODO Block Count - every   block broken increments counter
-            // TODO
-            // TODO STOP command
-            // TODO TURN ARUND command
-            // TODO /gift bread 3
-            // TODO when death block randomizes
-            // TODO Add Death Counter
-            // TODO Change Loacation command x y coords GOTO TP Telepoprt
-
-
-
-            // TODO
-            // TODO Spaw mobs
-            // TODO
-            // TODO
-            // TODO lookup lookright lookleft lookdown
             KeyMapping key = switch (action) {
                 case "perspective" -> mc.options.keyTogglePerspective;
                 case "smooth"      -> mc.options.keySmoothCamera;
@@ -251,15 +287,12 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 default            -> null;
             };
 
+            if (action == "stop") {
+                // TODO
+            }
+
             if (key != null) {
                 key.setDown(direction);
-                /* TODO for click commands
-                for (String tgl: TOGGLES) {
-                    if (msg.contains(tgl)) {
-                    if (action in TOGGLES)
-                    KeyMapping.click(mc.options.keyInventory.getKey()); // Increments the internal click counter
-                }
-                */
             }
         }
     }
@@ -308,6 +341,14 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     private static Map<String, Integer> playerCommands = new LinkedHashMap<>();
     static void youtubeTwitchCommands(String message) {
         String msg = message.toLowerCase();
+
+                /* TODO for click commands
+                for (String tgl: TOGGLES) {
+                    if (msg.contains(tgl)) {
+                    if (action in TOGGLES)
+                    KeyMapping.click(mc.options.keyInventory.getKey()); // Increments the internal click counter
+                }
+                */
         for (String event: EVENTS) {
             if (msg.contains(event)) {
                 switch (event) {
