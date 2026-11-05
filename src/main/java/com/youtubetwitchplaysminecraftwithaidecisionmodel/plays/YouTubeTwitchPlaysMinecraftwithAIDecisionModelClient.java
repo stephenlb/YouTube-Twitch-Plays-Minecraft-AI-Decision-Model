@@ -155,8 +155,13 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     /// @QuickfixKBPAWER §6§lMINECRAFT COLORS: §r§00 §1DarkBlue §2Green §3Cyan §4Red §5Purple §6Gold §7Gray §8DarkGray §9Blue §aLime §bAqua §cRed §dPink §eYellow §fWhite
 
     private static List<String> ACTION_COMMANDS = List.of(
-        "swap", "drop", "use", "pick"
+        "swap", "drop", "use", "pick", "inventory", "chat",
+        "look up", "look down", "look left", "look right", "turn around", "slot"
     );
+    static void look(Minecraft mc, float yaw, float pitch) {
+        mc.player.setYRot(mc.player.getYRot() + yaw);
+        mc.player.setXRot(Math.max(-90f, Math.min(90f, mc.player.getXRot() + pitch)));
+    }
     static void actionCommadns(Minecraft mc, String message) {
         String msg = message.toLowerCase();
 
@@ -165,10 +170,23 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             if (!msg.contains(cmd)) continue;
 
             switch (cmd) {
-                case "swap" -> KeyMapping.click(mc.options.keyInventory.getKey());
-                case "drop" -> playerCommands.put("forward", 0);
-                case "use"  -> playerCommands.put("right", 0);
-                case "pick" -> playerCommands.put("left", 0);
+                case "swap" -> KeyMapping.click(mc.options.keySwapOffhand.getKey());
+                case "drop" -> KeyMapping.click(mc.options.keyDrop.getKey());
+                case "use"  -> KeyMapping.click(mc.options.keyUse.getKey());
+                case "pick" -> KeyMapping.click(mc.options.keyPickItem.getKey());
+                case "inventory" -> KeyMapping.click(mc.options.keyInventory.getKey());
+                case "chat"      -> KeyMapping.click(mc.options.keyChat.getKey());
+                case "look up"    -> look(mc, 0, -30);
+                case "look down"  -> look(mc, 0, 30);
+                case "look left"  -> look(mc, -30, 0);
+                case "look right" -> look(mc, 30, 0);
+                case "turn around" -> look(mc, 180, 0);
+                case "slot" -> {
+                    Matcher m = Pattern.compile("slot ?([1-9])").matcher(msg);
+                    if (m.find()) {
+                        KeyMapping.click(mc.options.keyHotbarSlots[Integer.parseInt(m.group(1)) - 1].getKey());
+                    }
+                }
             }
         }
     }
@@ -331,6 +349,9 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     private static Map<String, Integer> playerCommands = new LinkedHashMap<>();
     static void youtubeTwitchCommands(String message) {
         String msg = message.toLowerCase();
+
+        // "look left" / "turn around" are camera commands, not movement
+        if (msg.contains("look ") || msg.contains("turn ")) return;
 
         for (String cmd: COMMANDS) {
             if (msg.contains(cmd)) {
