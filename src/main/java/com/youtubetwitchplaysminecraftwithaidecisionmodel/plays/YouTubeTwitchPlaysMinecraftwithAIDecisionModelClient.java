@@ -155,8 +155,10 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     /// @QuickfixKBPAWER §6§lMINECRAFT COLORS: §r§00 §1DarkBlue §2Green §3Cyan §4Red §5Purple §6Gold §7Gray §8DarkGray §9Blue §aLime §bAqua §cRed §dPink §eYellow §fWhite
 
     private static List<String> ACTION_COMMANDS = List.of(
-        "swap", "drop", "use", "pick", "inventory", "chat",
-        "look up", "look down", "look left", "look right", "turn around", "slot"
+        "swap", "drop", "use", "attack", "pick",
+        "inventory", "chat", "escape",
+        "look up", "look down", "look left", "look right",
+        "turn around", "slot", "next item", "prev item"
     );
     static void look(Minecraft mc, float yaw, float pitch) {
         mc.player.setYRot(mc.player.getYRot() + yaw);
@@ -173,9 +175,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 case "swap" -> KeyMapping.click(mc.options.keySwapOffhand.getKey());
                 case "drop" -> KeyMapping.click(mc.options.keyDrop.getKey());
                 case "use"  -> KeyMapping.click(mc.options.keyUse.getKey());
+                case "attack" -> KeyMapping.click(mc.options.keyAttack.getKey());
                 case "pick" -> KeyMapping.click(mc.options.keyPickItem.getKey());
                 case "inventory" -> KeyMapping.click(mc.options.keyInventory.getKey());
-                case "chat"      -> KeyMapping.click(mc.options.keyChat.getKey());
+                case "chat"      -> mc.gui.setScreen(new net.minecraft.client.gui.screens.ChatScreen("", false));
+                case "escape"    -> { if (mc.gui.screen() != null) mc.gui.screen().onClose(); }
                 case "look up"    -> look(mc, 0, -30);
                 case "look down"  -> look(mc, 0, 30);
                 case "look left"  -> look(mc, -30, 0);
@@ -184,9 +188,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 case "slot" -> {
                     Matcher m = Pattern.compile("slot ?([1-9])").matcher(msg);
                     if (m.find()) {
-                        KeyMapping.click(mc.options.keyHotbarSlots[Integer.parseInt(m.group(1)) - 1].getKey());
+                        mc.player.getInventory().setSelectedSlot(Integer.parseInt(m.group(1)) - 1);
                     }
                 }
+                case "next item" -> mc.player.getInventory().setSelectedSlot((mc.player.getInventory().getSelectedSlot() + 1) % 9);
+                case "prev item" -> mc.player.getInventory().setSelectedSlot((mc.player.getInventory().getSelectedSlot() + 8) % 9);
             }
         }
     }
@@ -302,7 +308,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 case "perspective" -> mc.options.keyTogglePerspective;
                 case "smooth"      -> mc.options.keySmoothCamera;
                 case "inventory"   -> mc.options.keyInventory;
-                case "attack"      -> mc.options.keyAttack;
+                case "mine"        -> mc.options.keyAttack;
                 case "sprint"      -> mc.options.keySprint;
                 case "jump"        -> mc.options.keyJump;
                 case "crouch"      -> mc.options.keyShift;
@@ -321,7 +327,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
     private static List<String> COMMANDS = List.of(
         "sprint", "jump", "crouch", "right", "left",
-        "forward", "backward", "attack", "stop"
+        "forward", "backward", "mine", "stop"
     );
     static List parseArgs(String command, String message) {
         String regex = command + " +([a-z0-9]+),? +([a-z0-9]+),? +([a-z0-9]+)";
