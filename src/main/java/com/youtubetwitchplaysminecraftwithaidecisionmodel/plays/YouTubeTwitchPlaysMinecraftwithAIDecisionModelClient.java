@@ -1,5 +1,13 @@
 package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 
+// Decision Models 
+// Decision Models 
+// Decision Models 
+// https://docs.liquid.ai/lfm/models/d1-2b
+// https://huggingface.co/LiquidAI/d1-2B
+// Decision Models 
+// Decision Models 
+
 /*
 ✅ keyUp / backKey / keyLeft / keyRight — Movement controls (W, S, A, D)
 ✅ keyJump — Jump
@@ -9,10 +17,6 @@ TODO Hotbar
 keyAttack — Attack / Break block (Left-click)
 keySprint — Sprint
 keyInventory — Open Inventory
-keySwapOffhand — Swap item to offhand (F)
-keyDrop — Drop item (Q)
-keyUse — Use item / Place block (Right-click)
-keyPickItem — Pick block
 keyChat — Open chat
 keyCommand — Open command prompt
 keySocialInteractions — Open social interactions screen (P)
@@ -150,6 +154,25 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     );
     /// @QuickfixKBPAWER §6§lMINECRAFT COLORS: §r§00 §1DarkBlue §2Green §3Cyan §4Red §5Purple §6Gold §7Gray §8DarkGray §9Blue §aLime §bAqua §cRed §dPink §eYellow §fWhite
 
+    private static List<String> ACTION_COMMANDS = List.of(
+        "swap", "drop", "use", "pick"
+    );
+    static void actionCommadns(Minecraft mc, String message) {
+        String msg = message.toLowerCase();
+
+        // Action commands
+        for (String cmd: ACTION_COMMANDS) {
+            if (!msg.contains(cmd)) continue;
+
+            switch (cmd) {
+                case "swap" -> KeyMapping.click(mc.options.keyInventory.getKey());
+                case "drop" -> playerCommands.put("forward", 0);
+                case "use"  -> playerCommands.put("right", 0);
+                case "pick" -> playerCommands.put("left", 0);
+            }
+        }
+    }
+
 
     static void subscribe() {
         subscribed = true;
@@ -191,6 +214,9 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                           // Run Slash Commands
                           slashCommands(mc, message);
 
+                          // Action Commands
+                          actionCommadns(mc, message);
+
                           // Colorize YouTube and Twitch chat
                           String color = playerColors.getOrDefault(user, "§c");
                           chatMessages.add(color + user + "§r: §6" + message);
@@ -217,10 +243,13 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     private static final Set<String> SLASH_COMMANDS = Set.of(
         "/tp", "/weather", "/give",
         "/summon", "/add", "/gamemode",
-        "/time", "/effect", "/setblock",
-        "/fill", "/attribute", "/kill"
+        "/time", "/effect", 
+        "/attribute", "/kill",
+        "/seed", "/gamerule", "/particle"
+        // "/fill", 
         // "/playsound",
         // "/worldborder"
+        // "/setblock",
     );
     static void slashCommands(Minecraft mc, String message) {
         String command = message.trim().split(" ")[0].trim();
@@ -240,27 +269,6 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
         for (Map.Entry<String, Integer> command : playerCommands.entrySet()) {
             String action = command.getKey();
-            // Allow for change of direction
-            /*
-            switch (action) {
-                case "forward":
-                    playerCommands.put("backward", 0);
-                    mc.options.keyDown.setDown(false);
-                    break;
-                case "backward":
-                    playerCommands.put("forward", 0);
-                    mc.options.keyUp.setDown(false);
-                    break;
-                case "left":
-                    playerCommands.put("rigth", 0);
-                    mc.options.keyRight.setDown(false);
-                    break;
-                case "right":
-                    playerCommands.put("backward", 0);
-                    mc.options.keyLeft.setDown(false);
-                    break;
-            }
-            */
             int frames = command.getValue() - 1;
             boolean direction = true;
 
@@ -287,10 +295,6 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 default            -> null;
             };
 
-            if (action == "stop") {
-                // TODO
-            }
-
             if (key != null) {
                 key.setDown(direction);
             }
@@ -299,22 +303,8 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
     private static List<String> COMMANDS = List.of(
         "sprint", "jump", "crouch", "right", "left",
-        "forward", "backward", "attack"
+        "forward", "backward", "attack", "stop"
     );
-    private static List<String> EVENTS = List.of(
-        "tp", "stop"
-    );
-
-/*(
-
-
-            // group(1) extracts the key, group(2) extracts the value
-            String key = matcher.group(1);
-            String value = matcher.group(2);
-            
-            System.out.println("Argument -> Key: " + key + ", Value: " + value);
-        }
-*/
     static List parseArgs(String command, String message) {
         String regex = command + " +([a-z0-9]+),? +([a-z0-9]+),? +([a-z0-9]+)";
         Pattern pattern = Pattern.compile(regex);
@@ -342,25 +332,23 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     static void youtubeTwitchCommands(String message) {
         String msg = message.toLowerCase();
 
-                /* TODO for click commands
-                for (String tgl: TOGGLES) {
-                    if (msg.contains(tgl)) {
-                    if (action in TOGGLES)
-                    KeyMapping.click(mc.options.keyInventory.getKey()); // Increments the internal click counter
-                }
-                */
-        for (String event: EVENTS) {
-            if (msg.contains(event)) {
-                switch (event) {
-                    case "tp":
-                    case "teleport":
-                        teleport(event, message);
-                        break;
-                }
-            }
-        }
         for (String cmd: COMMANDS) {
             if (msg.contains(cmd)) {
+                // Allow for change of direction
+                switch (cmd) {
+                    case "forward"  -> playerCommands.put("backward", 0);
+                    case "backward" -> playerCommands.put("forward", 0);
+                    case "left"     -> playerCommands.put("right", 0);
+                    case "right"    -> playerCommands.put("left", 0);
+                }
+
+                // Stop all movement actions
+                if (cmd == "stop") {
+                    for (String cmd2: COMMANDS) {
+                        playerCommands.put(cmd2, 0);
+                    }
+                }
+
                 Integer val = playerCommands.getOrDefault(cmd, 0);
                 if (val > 0) {
                     playerCommands.put(cmd, 0);
