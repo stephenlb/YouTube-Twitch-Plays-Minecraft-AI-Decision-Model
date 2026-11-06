@@ -1,0 +1,22 @@
+[project]
+name = "ai-model"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Stephen Blum", email = "blum.stephen@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "accelerate>=1.15.0",
+    "fastapi[standard]>=0.162.0",
+    "torch>=2.6",
+    "transformers>=5.22.2",
+]
+
+[project.scripts]
+ai-model = "ai_model:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
