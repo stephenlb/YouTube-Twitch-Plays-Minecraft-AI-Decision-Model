@@ -269,11 +269,13 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         "/summon", "/add", "/gamemode",
         "/time", "/effect", 
         "/attribute", "/kill",
-        "/seed", "/gamerule", "/particle"
+        "/seed", "/gamerule", //, "/particle",
+        "/playsound"// , "/title", "/data" // , "/attribute"
+        // , "/fill", "/attribute"
         // "/fill", 
-        // "/playsound",
         // "/worldborder"
         // "/setblock",
+        // "/exectue"
     );
     static void slashCommands(Minecraft mc, String message) {
         String command = message.trim().split(" ")[0].trim();
@@ -399,6 +401,22 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 int textWidth = mc.font.width(label);
                 int xPosition = rightMargin - textWidth - 100;
                 guiGraphics.text(mc.font, label, xPosition, 100, 0xFFFF2222, true);
+
+                // Movement instructions with active indicators (value > 0 means active)
+                int yCmdPos = 115;
+                String header = "Type a command in chat to toggle:";
+                guiGraphics.text(mc.font, header, rightMargin - mc.font.width(header) - 10, yCmdPos, 0xFFFFFF55, true);
+                yCmdPos += 11;
+                for (String cmd : COMMANDS) {
+                    boolean isStop = cmd.equals("stop");
+                    boolean active = playerCommands.getOrDefault(cmd, 0) > 0;
+                    String line = isStop
+                        ? "stop - release all"
+                        : (active ? "[ON]  " : "[off] ") + cmd;
+                    int color = isStop ? 0xFFFF5555 : (active ? 0xFF55FF55 : 0xFFAAAAAA);
+                    guiGraphics.text(mc.font, line, rightMargin - mc.font.width(line) - 10, yCmdPos, color, true);
+                    yCmdPos += 11;
+                }
 
                 int xChatPos = 0;
                 int yChatPos = 0;
