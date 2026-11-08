@@ -116,6 +116,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpRequest.BodyPublishers;
 import java.util.concurrent.CompletableFuture;
 
 // This class will not load on dedicated servers. Accessing client side code from here is safe.
@@ -197,6 +198,37 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
     }
 
+    private static boolean aiThinking = false;
+    static void askAI(String question) {
+        aiThinking = true;
+        // Shell out to curl: macOS Local Network privacy blocks the JVM but not curl
+        CompletableFuture.supplyAsync(() -> {
+                try {
+                    Process p = new ProcessBuilder("curl", "-s", "-m", "10",
+                        "http://192.168.50.50:8000", "--data", question).start();
+                    String out = new String(p.getInputStream().readAllBytes());
+                    if (p.waitFor() != 0) throw new RuntimeException("curl failed: " + p.exitValue());
+                    return out;
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            })
+            .thenAccept(body -> {
+                JsonObject json = new Gson().fromJson(body, JsonObject.class);
+                String choice = json.getAsJsonObject("movement").get("choice").getAsString();
+                YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("AI choice: {}", choice);
+                Minecraft mc = Minecraft.getInstance();
+                mc.execute(() -> {
+                    if (mc.player == null) return;
+                    // TODO fix!!!
+                    //youtubeTwitchCommands(choice);
+                });
+            })
+            .whenComplete((ok, ex) -> {
+                aiThinking = false;
+                if (ex != null) YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.error("AI request FAILED", ex);
+            });
+    }
 
     static void subscribe() {
         subscribed = true;
@@ -265,15 +297,17 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     }
 
     private static final Set<String> SLASH_COMMANDS = Set.of(
+        "/execute",
         "/tp", "/weather", "/give",
         "/summon", "/add", "/gamemode",
         "/time", "/effect", 
         "/attribute", "/kill",
         "/seed", "/gamerule", //, "/particle",
-        "/playsound"// , "/title", "/data" // , "/attribute"
+        "/playsound", "/worldborder"
+        // , "/title", "/data" // , "/attribute"
         // , "/fill", "/attribute"
         // "/fill", 
-        // "/worldborder"
+        // 
         // "/setblock",
         // "/exectue"
     );
@@ -289,9 +323,10 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     @SubscribeEvent
     static void onClientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
-        //LocalPlayer player = mc.player;
-        if (!subscribed) subscribe();
+
         if (mc == null) return;
+        if (!aiThinking && mc.player != null) askAI("new world");
+        if (!subscribed) subscribe();
 
         for (Map.Entry<String, Integer> command : playerCommands.entrySet()) {
             String action = command.getKey();
