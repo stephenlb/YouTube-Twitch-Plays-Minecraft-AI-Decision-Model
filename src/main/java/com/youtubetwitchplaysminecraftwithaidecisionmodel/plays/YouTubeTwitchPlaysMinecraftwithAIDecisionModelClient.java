@@ -250,98 +250,80 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     }
 
     // Stuck detection: consecutive decisions where the player tried to move but barely did
-    private static volatile int stuckCount = 0;
+    private static int stuckCount = 0;
     private static Vec3 lastDecisionPos = null;
     private static boolean lastWantedMove = false;
 
-    private static boolean isMoveChoice(String move) {
-        return !move.equals("stop") && !move.equals("none");
-    }
-
     static void applyAIDecision(Minecraft mc, JsonObject json) {
-        String move = aiChoice(json, "movement");
-        String combat = aiChoice(json, "combat");
-        String look = aiChoice(json, "look");
-        String sprint = aiChoice(json, "sprint");
-        String jump = aiChoice(json, "jump");
-        String crouch = aiChoice(json, "crouch");
-        String mine = aiChoice(json, "mine");
+        String move = aiChoice(json, "move");
+        String act = aiChoice(json, "act");
+        String turn = aiChoice(json, "turn");
+        LocalPlayer p = mc.player;
         LivingEntity target = nearestHostile(mc, 8);
+        boolean hostileClose = target != null && target.distanceToSqr(p) < 25;
 
-        // Did the last decision actually move us?
-        Vec3 pos = mc.player.position();
-        boolean chatHoldingMove = false;
+        // Stuck detection (AI or chat wanted movement, but we barely moved)
+        Vec3 pos = p.position();
+        boolean chatMoving = false;
         for (String k : List.of("forward", "backward", "left", "right")) {
-            if (playerCommands.getOrDefault(k, 0) > 0) chatHoldingMove = true;
+            if (playerCommands.getOrDefault(k, 0) > 0) chatMoving = true;
         }
-        if (lastDecisionPos != null && (lastWantedMove || chatHoldingMove)
-                && pos.distanceToSqr(lastDecisionPos) < 0.25) {
-            stuckCount++;
-        } else {
-            stuckCount = 0;
-        }
+        boolean wanted = lastWantedMove || chatMoving;
+        stuckCount = (lastDecisionPos != null && wanted && pos.distanceToSqr(lastDecisionPos) < 0.25) ? stuckCount + 1 : 0;
         lastDecisionPos = pos;
-        lastWantedMove = isMoveChoice(move);
+        lastWantedMove = !move.equals("stop") && !move.equals("none");
 
-        // Release keys the AI was holding last round. Chat-held toggles stay, unless we are stuck:
-        // a chat "forward" held into a wall would otherwise block the AI forever.
+        // Release last round's AI keys; when stuck also release chat-held ones
         boolean stuck = stuckCount >= 2;
         for (String k : AI_KEYS) {
             if (stuck || playerCommands.getOrDefault(k, 0) < CHAT_HOLD_THRESHOLD) playerCommands.put(k, 0);
         }
 
         // Camera
-        switch (look) {
-            case "left_90"     -> look(mc, -90, 0);
-            case "right_90"    -> look(mc, 90, 0);
-            case "up"          -> look(mc, 0, -30);
-            case "face_mob"    -> { if (target != null) aimAt(mc, target); }
-            case "turn_around" -> look(mc, 180, 0);
-            case "left"        -> look(mc, -30, 0);
-            case "right"       -> look(mc, 30, 0);
-            case "down"        -> look(mc, 0, 30);
+        switch (turn) {
+            case "left"   -> look(mc, -45, 0);
+            case "right"  -> look(mc, 45, 0);
+            case "around" -> look(mc, 180, 0);
             default -> {}
         }
 
         // Movement
+        boolean forward = false;
         switch (move) {
-            case "forward", "backward", "left", "right" -> aiHold(move, AI_HOLD_TICKS);
-            case "jump_forward" -> { aiHold("forward", AI_HOLD_TICKS); aiHold("jump", AI_HOLD_TICKS); }
-            case "sprint_forward" -> { aiHold("forward", AI_HOLD_TICKS); aiHold("sprint", AI_HOLD_TICKS); }
+            case "forward" -> forward = true;
+            case "backward", "left", "right" -> aiHold(move, AI_HOLD_TICKS);
+            case "approach" -> { if (target != null) { aimAt(mc, target); forward = true; } }
             case "flee" -> {
-                if (target != null) {
-                    aimAt(mc, target);
-                    look(mc, 180, 0);
-                    aiHold("forward", AI_HOLD_TICKS);
-                    aiHold("sprint", AI_HOLD_TICKS);
-                }
+                if (target != null) { aimAt(mc, target); look(mc, 180, 0); forward = true; aiHold("sprint", AI_HOLD_TICKS); }
             }
-            case "approach" -> {
-                if (target != null) {
-                    aimAt(mc, target);
-                    aiHold("forward", AI_HOLD_TICKS);
-                    if (target.distanceToSqr(mc.player) > 16) aiHold("sprint", AI_HOLD_TICKS);
-                }
-            }
-            default -> {} // "stop"
+            default -> {} // stop
+        }
+        if (forward) {
+            aiHold("forward", AI_HOLD_TICKS);
+            if (!hostileClose && move.equals("forward")) aiHold("sprint", AI_HOLD_TICKS);
         }
 
-        // Modifiers: sprint / jump / crouch / mine
-        if (sprint.equals("on")) aiHold("sprint", AI_HOLD_TICKS);
-        else if (playerCommands.getOrDefault("sprint", 0) < CHAT_HOLD_THRESHOLD) playerCommands.put("sprint", 0);
-        if (jump.equals("jump")) aiHold("jump", 4);
-        if (crouch.equals("sneak")) aiHold("crouch", AI_HOLD_TICKS);
-        if (mine.equals("break_block")) aiHold("mine", AI_HOLD_TICKS);
+        // Auto jump: blocked by a ledge, or swimming
+        if (p.horizontalCollision || p.isInWater()) aiHold("jump", 4);
 
-        // Combat
-        switch (combat) {
+        // Stuck recovery, escalating: jump -> turn 90 -> dig
+        if (stuck) {
+            aiHold("forward", AI_HOLD_TICKS);
+            aiHold("jump", 4);
+            if (stuckCount >= 3) look(mc, stuckCount % 2 == 0 ? 90 : -90, 0);
+            if (stuckCount >= 5) aiHold("mine", AI_HOLD_TICKS);
+        }
+
+        // Action
+        switch (act) {
             case "attack" -> {
                 if (target != null) {
                     aimAt(mc, target);
-                    if (target.distanceToSqr(mc.player) <= 3.5 * 3.5) aiHold("mine", AI_HOLD_TICKS);
+                    if (target.distanceToSqr(p) <= 3.5 * 3.5) aiHold("mine", AI_HOLD_TICKS);
                 }
             }
             case "block" -> aiHold("use", AI_HOLD_TICKS);
+            case "mine"  -> aiHold("mine", AI_HOLD_TICKS);
             default -> {}
         }
     }
@@ -644,7 +626,6 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
           .append(p.isInWater() ? " in:water" : "")
           .append(p.isInLava() ? " in:lava" : "")
           .append(p.isOnFire() ? " fire:1" : "")
-          .append(stuckCount > 0 ? " stuck:" + stuckCount : "")
           .append("\n");
 
         // Terrain: first obstacle/hazard in each relative direction
