@@ -210,7 +210,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     }
 
     // ---- AI decision handling -------------------------------------------------
-    private static final int AI_HOLD_TICKS = 10;
+    private static final int AI_HOLD_TICKS = 20; // covers the ~1s gap between AI decisions
     private static final int CHAT_HOLD_THRESHOLD = 1_000_000; // chat toggles hold ~10M ticks
     private static final List<String> AI_KEYS = List.of(
         "forward", "backward", "left", "right", "sprint", "jump", "crouch", "mine", "use"
@@ -253,11 +253,45 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     private static int stuckCount = 0;
     private static Vec3 lastDecisionPos = null;
     private static boolean lastWantedMove = false;
+    // Dig mode: hold attack long enough to finish breaking a block (~4s), ignoring new AI decisions
+    private static boolean digging = false;
+    private static final int DIG_TICKS = 80;
+
+    /** In water: face the nearest shore (solid block with open air above) and swim to it. */
+    private static void escapeWater(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        ClientLevel lvl = mc.level;
+        BlockPos origin = p.blockPosition();
+        Direction best = null;
+        int bestDist = 9;
+        for (Direction d : Direction.Plane.HORIZONTAL) {
+            for (int dist = 1; dist < bestDist; dist++) {
+                BlockPos pos = origin.relative(d, dist);
+                BlockPos up = pos.above();
+                // Shore: solid block at feet level (or one up) with free, water-free space above it
+                for (BlockPos ground : new BlockPos[] { pos, pos.below() }) {
+                    BlockPos air = ground.above();
+                    if (isSolid(lvl, ground, lvl.getBlockState(ground))
+                            && lvl.getBlockState(air).getFluidState().isEmpty()
+                            && !isSolid(lvl, air, lvl.getBlockState(air))) {
+                        best = d;
+                        bestDist = dist;
+                    }
+                }
+            }
+        }
+        if (best != null) {
+            p.setYRot(best.toYRot());
+            p.setXRot(0);
+            aiHold("forward", AI_HOLD_TICKS);
+        }
+        aiHold("jump", AI_HOLD_TICKS); // swim up
+        lastWantedMove = false;
+        stuckCount = 0;
+    }
 
     static void applyAIDecision(Minecraft mc, JsonObject json) {
         String move = aiChoice(json, "move");
-        String act = aiChoice(json, "act");
-        String turn = aiChoice(json, "turn");
         LocalPlayer p = mc.player;
         LivingEntity target = nearestHostile(mc, 8);
         boolean hostileClose = target != null && target.distanceToSqr(p) < 25;
@@ -273,18 +307,28 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         lastDecisionPos = pos;
         lastWantedMove = !move.equals("stop") && !move.equals("none");
 
+        // Dig ends once we moved forward (block broke) or the hold ran out
+        if (digging && (stuckCount == 0 || playerCommands.getOrDefault("mine", 0) <= 0)) digging = false;
+
         // Release last round's AI keys; when stuck also release chat-held ones
         boolean stuck = stuckCount >= 2;
         for (String k : AI_KEYS) {
+            if (digging && (k.equals("mine") || k.equals("forward"))) continue;
             if (stuck || playerCommands.getOrDefault(k, 0) < CHAT_HOLD_THRESHOLD) playerCommands.put(k, 0);
         }
 
-        // Camera
-        switch (turn) {
-            case "left"   -> look(mc, -45, 0);
-            case "right"  -> look(mc, 45, 0);
-            case "around" -> look(mc, 180, 0);
-            default -> {}
+        // Drowning comes first: ignore the AI until we are out of the water
+        if (p.isInWater()) {
+            digging = false;
+            escapeWater(mc);
+            return;
+        }
+
+        // Keep digging until the block breaks; skip everything else so the camera stays put
+        if (digging) {
+            aiHold("forward", AI_HOLD_TICKS);
+            lastWantedMove = true;
+            return;
         }
 
         // Movement
@@ -292,7 +336,14 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         switch (move) {
             case "forward" -> forward = true;
             case "backward", "left", "right" -> aiHold(move, AI_HOLD_TICKS);
-            case "approach" -> { if (target != null) { aimAt(mc, target); forward = true; } }
+            case "attack" -> {
+                if (target != null) {
+                    aimAt(mc, target);
+                    double d2 = target.distanceToSqr(p);
+                    if (d2 > 2.5 * 2.5) forward = true;
+                    if (d2 <= 3.5 * 3.5) aiHold("mine", AI_HOLD_TICKS);
+                }
+            }
             case "flee" -> {
                 if (target != null) { aimAt(mc, target); look(mc, 180, 0); forward = true; aiHold("sprint", AI_HOLD_TICKS); }
             }
@@ -310,21 +361,12 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         if (stuck) {
             aiHold("forward", AI_HOLD_TICKS);
             aiHold("jump", 4);
-            if (stuckCount >= 3) look(mc, stuckCount % 2 == 0 ? 90 : -90, 0);
-            if (stuckCount >= 5) aiHold("mine", AI_HOLD_TICKS);
-        }
-
-        // Action
-        switch (act) {
-            case "attack" -> {
-                if (target != null) {
-                    aimAt(mc, target);
-                    if (target.distanceToSqr(p) <= 3.5 * 3.5) aiHold("mine", AI_HOLD_TICKS);
-                }
+            if (stuckCount >= 5) {
+                digging = true;
+                aiHold("mine", DIG_TICKS);
+            } else if (stuckCount >= 3) {
+                look(mc, stuckCount % 2 == 0 ? 90 : -90, 0);
             }
-            case "block" -> aiHold("use", AI_HOLD_TICKS);
-            case "mine"  -> aiHold("mine", AI_HOLD_TICKS);
-            default -> {}
         }
     }
 
@@ -495,6 +537,17 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             if (key != null) {
                 key.setDown(direction);
             }
+        }
+
+        // Per-tick swim: in water always hold jump so the player rises and keeps their head above water
+        if (mc.player != null && mc.player.isInWater()) {
+            mc.options.keyJump.setDown(true);
+        }
+
+        // Per-tick auto jump: walking into a ledge on the ground -> jump (vanilla jump clears 1 block)
+        LocalPlayer lp = mc.player;
+        if (lp != null && mc.options.keyUp.isDown() && lp.horizontalCollision && (lp.onGround() || lp.isInWater())) {
+            mc.options.keyJump.setDown(true);
         }
     }
 

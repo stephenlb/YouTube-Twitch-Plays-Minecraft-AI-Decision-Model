@@ -10,39 +10,19 @@ model = AutoModelForMultimodalLM.from_pretrained(
 model = model.to("mps")
 
 # Keep questions tiny: every question costs a model pass.
-# Java handles sprint, jump, stuck recovery and aiming.
+# ONE question = one model pass. Java handles sprint, jump, turning, mining, stuck recovery, aiming.
 QUESTIONS = {
     "move": {
         "type": "choice",
-        "instructions": "Best move? Avoid lava and drops.",
+        "instructions": "Best move? Avoid lava, water and drops.",
         "criteria": {
             "forward": "path clear",
             "backward": "back away",
-            "left": "dodge or turn clear",
-            "right": "dodge or turn clear",
+            "left": "left clear",
+            "right": "right clear",
+            "attack": "hostile near, healthy",
             "flee": "hostile near, low hp",
-            "approach": "hostile near, healthy",
             "stop": "blocked",
-        },
-    },
-    "act": {
-        "type": "choice",
-        "instructions": "Action?",
-        "criteria": {
-            "attack": "hostile within 3",
-            "block": "hostile near, low hp",
-            "mine": "wall ahead",
-            "none": "nothing",
-        },
-    },
-    "turn": {
-        "type": "choice",
-        "instructions": "Turn camera?",
-        "criteria": {
-            "left": "left is clear",
-            "right": "right is clear",
-            "around": "danger ahead",
-            "none": "keep",
         },
     },
 }
