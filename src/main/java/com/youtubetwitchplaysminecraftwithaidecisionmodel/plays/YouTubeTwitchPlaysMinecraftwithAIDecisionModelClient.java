@@ -75,6 +75,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.world.entity.animal.Animal;
+import net.minecraft.world.entity.TamableAnimal;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.entity.player.StackedItemContents;
@@ -315,6 +319,9 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 // Survival stages: daytime, no gifts, no summons
                 if (devTicks == 40) p.connection.sendCommand("time set day");
                 if (devTicks == 60) p.connection.sendCommand("gamerule advance_time false");
+                // These test worlds ship with health regeneration off; turn it on (name differs between versions)
+                if (devTicks == 70) p.connection.sendCommand("gamerule natural_health_regeneration true");
+                if (devTicks == 71) p.connection.sendCommand("gamerule naturalRegeneration true");
             } else {
             if (devTicks == 40) p.connection.sendCommand("difficulty normal");
             if (devTicks == 60) p.connection.sendCommand("time set midnight");
@@ -384,6 +391,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         if (combatTicks <= 0 || combatTarget == null) return;
         LocalPlayer p = mc.player;
         combatTicks--;
+        if (!combatTarget.isAlive()) pickupTicks = 100; // walk over the drops
         if (!combatTarget.isAlive() || shouldFlee(mc, p, combatTarget) || mc.gameMode == null) {
             combatTarget = null;
             combatTicks = 0;
@@ -499,7 +507,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     static void tickGather(Minecraft mc) {
         LocalPlayer p = mc.player;
         Predicate<BlockState> want = gatherWanted();
-        if (want == null || combatTicks > 0 || digging || p.isInWater() || mc.gui.screen() != null) { gatherTarget = null; return; }
+        if (want == null || combatTicks > 0 || pickupTicks > 0 || digging || p.isInWater() || mc.gui.screen() != null) { gatherTarget = null; return; }
         if (stage == 1 && countLogs(p) >= GOAL_LOGS) { gatherTarget = null; return; }
         if (stage == 3 && countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL) { gatherTarget = null; return; }
 
@@ -555,7 +563,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     static boolean hasPickaxe(LocalPlayer p) { return countItems(p, st -> st.is(ItemTags.PICKAXES)) > 0; }
 
     static String invSummary(LocalPlayer p) {
-        return "st" + stage + " C" + countItems(p, st -> st.is(Items.COBBLESTONE)) + " L" + countLogs(p) + "/P" + countItems(p, st -> st.is(ItemTags.PLANKS)) + "/S" + countItems(p, st -> st.is(Items.STICK))
+        return "F" + p.getFoodData().getFoodLevel() + "/" + foodItems(p) + " st" + stage + " C" + countItems(p, st -> st.is(Items.COBBLESTONE)) + " L" + countLogs(p) + "/P" + countItems(p, st -> st.is(ItemTags.PLANKS)) + "/S" + countItems(p, st -> st.is(Items.STICK))
             + "/T" + countItems(p, st -> st.is(Items.CRAFTING_TABLE)) + "/PK" + countItems(p, st -> st.is(ItemTags.PICKAXES)) + " " + craftNote;
     }
 
@@ -720,6 +728,76 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("WATCHDOG no progress: wandering {}s (level {})", wanderTicks / 20, wdLevel);
     }
 
+    // ---- Survival: hunger. Hunt passive animals, pick up drops, eat. ---------------
+    private static int pickupTicks = 0;
+
+    static boolean isFood(ItemStack st) {
+        if (st.isEmpty() || st.get(DataComponents.FOOD) == null) return false;
+        return !(st.is(Items.ROTTEN_FLESH) || st.is(Items.SPIDER_EYE) || st.is(Items.POISONOUS_POTATO) || st.is(Items.PUFFERFISH));
+    }
+    static int foodItems(LocalPlayer p) { return countItems(p, st -> isFood(st)); }
+    static boolean hungry(LocalPlayer p) {
+        int f = p.getFoodData().getFoodLevel();
+        return f <= 14 || (p.getHealth() < 14 && f < 20);
+    }
+
+    private static LivingEntity nearestAnimal(Minecraft mc, double radius) {
+        LivingEntity best = null;
+        for (Entity e : mc.level.getEntities(mc.player, mc.player.getBoundingBox().inflate(radius))) {
+            if (e instanceof Animal a && !(a instanceof TamableAnimal) && a.isAlive() && !a.isBaby()) {
+                if (best == null || a.distanceToSqr(mc.player) < best.distanceToSqr(mc.player)) best = a;
+            }
+        }
+        return best;
+    }
+
+    /** True when the bot should drop what it is doing and go hunting. */
+    private static boolean huntNeeded(Minecraft mc, LocalPlayer p) {
+        return p.getFoodData().getFoodLevel() <= 12 && foodItems(p) == 0 && nearestAnimal(mc, 24) != null;
+    }
+
+    /** Runs every tick: eat when hungry, walk over fresh drops. */
+    static void tickEat(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        if (mc.gui.screen() != null) return;
+        if (hungry(p) && p.getFoodData().getFoodLevel() < 20 && combatTicks <= 0) {
+            for (int i = 0; i < 9; i++) {
+                if (isFood(p.getInventory().getItem(i))) {
+                    if (!p.isUsingItem()) p.getInventory().setSelectedSlot(i);
+                    aiHold("use", 3); // must stay held for the whole ~1.6s or the game cancels the meal
+                    return;
+                }
+            }
+        }
+        if (pickupTicks > 0 && combatTicks <= 0) {
+            pickupTicks--;
+            ItemEntity best = null;
+            for (ItemEntity it : mc.level.getEntitiesOfClass(ItemEntity.class, p.getBoundingBox().inflate(8))) {
+                if (best == null || it.distanceToSqr(p) < best.distanceToSqr(p)) best = it;
+            }
+            if (best != null && best.distanceToSqr(p) > 0.8) {
+                aimAtPos(p, best.position());
+                p.setXRot(0);
+                aiHold("forward", 3);
+            }
+        }
+    }
+
+    /** Runs every tick, whatever the bot is doing: never walk off a 3+ block drop or into lava. */
+    static void tickSafety(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        if (!p.onGround() || p.isInWater() || !mc.options.keyUp.isDown()) return;
+        String ahead = scanDir(mc.level, p.blockPosition(), p.getDirection(), 2);
+        boolean deadly = ahead.startsWith("lava") || ahead.startsWith("drop3") || ahead.startsWith("drop4") || ahead.startsWith("drop5");
+        if (!deadly) return;
+        playerCommands.put("forward", 0);
+        playerCommands.put("sprint", 0);
+        mc.options.keyUp.setDown(false);
+        mc.options.keySprint.setDown(false);
+        if (gatherTarget != null) { gatherBlacklist.add(gatherTarget); gatherTarget = null; }
+        look(mc, RNG.nextBoolean() ? 90 : -90, 0);
+    }
+
     private static boolean isFree(String scan) {
         return scan.equals("clear") || scan.startsWith("step");
     }
@@ -794,7 +872,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         LivingEntity target = nearestHostile(mc, 8);
 
         // Gathering owns the keys every tick; releasing them here would reset block-breaking progress
-        if (gatherTarget != null && !(target != null && p.hasLineOfSight(target)) && !p.isInWater()) {
+        if (gatherTarget != null && !(target != null && p.hasLineOfSight(target)) && !p.isInWater() && !huntNeeded(mc, p)) {
             lastPath = "gather";
             return;
         }
@@ -802,6 +880,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         // Release last round's AI keys (chat toggles stay, dig keys stay)
         for (String k : AI_KEYS) {
             if (digging && (k.equals("mine") || k.equals("forward"))) continue;
+            if (k.equals("use") && p.isUsingItem()) continue;
             if (playerCommands.getOrDefault(k, 0) < CHAT_HOLD_THRESHOLD) playerCommands.put(k, 0);
         }
 
@@ -832,6 +911,16 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             return;
         }
         combatTicks = 0;
+
+        // 3a. Starving with no food: hunt the nearest passive animal (tickCombat chases and kills it)
+        if (huntNeeded(mc, p) && !digging) {
+            LivingEntity prey = nearestAnimal(mc, 24);
+            lastPath = "hunt";
+            combatTarget = prey;
+            combatTicks = 80;
+            aimAt(mc, prey);
+            return;
+        }
 
         // 3b. Keep digging until the block breaks
         if (digging) {
@@ -1053,7 +1142,9 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
         if (mc.player != null && mc.level != null) {
             tickCombat(mc);
+            tickSafety(mc);
             tickGather(mc);
+            tickEat(mc);
             tickCraft(mc);
             tickUnstuck(mc);
             tickWatchdog(mc);
