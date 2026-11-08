@@ -67,6 +67,8 @@ runs {
         // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
         systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
         environmentVariable 'YOUTUBE_TWITCH_CHANNEL', System.getenv('YOUTUBE_TWITCH_CHANNEL') ?: ''
+        // ./gradlew runClient -PquickPlay=<world folder> jumps straight into a singleplayer world
+        if (project.hasProperty('quickPlay')) arguments.addAll '--quickPlaySingleplayer', project.property('quickPlay')
     }
 
     server {

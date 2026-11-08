@@ -73,6 +73,22 @@ keySpectatorOutlines — Highlight players in spectator
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.entity.player.StackedItemContents;
+import net.minecraft.client.gui.screens.recipebook.RecipeCollection;
+import net.minecraft.world.item.crafting.display.RecipeDisplayEntry;
+import net.minecraft.world.item.crafting.display.SlotDisplayContext;
+import net.minecraft.util.context.ContextMap;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.CraftingMenu;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.phys.BlockHitResult;
+import java.util.function.Predicate;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Enemy;
@@ -249,13 +265,385 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         p.setXRot((float) Math.max(-90, Math.min(90, -Math.toDegrees(Math.atan2(dy, horiz)))));
     }
 
-    // Stuck detection: consecutive decisions where the player tried to move but barely did
-    private static int stuckCount = 0;
-    private static Vec3 lastDecisionPos = null;
-    private static boolean lastWantedMove = false;
     // Dig mode: hold attack long enough to finish breaking a block (~4s), ignoring new AI decisions
     private static boolean digging = false;
     private static final int DIG_TICKS = 80;
+
+    // Per-tick stuck detection (runs every game tick, independent of the slow AI)
+    private static Vec3 tickLastPos = null;
+    private static Vec3 stuckOrigin = null;
+    private static int stuckTicks = 0;
+    private static int stuckStage = 0;
+    private static final int STUCK_STEP_TICKS = 15;
+
+    // Per-tick combat aiming
+    private static LivingEntity combatTarget = null;
+    private static int combatTicks = 0;
+
+    // ---- Dev instrumentation: PROGRESS log lines, plus an opt-in test hook (env AI_TEST=1) ----
+    private static final boolean AI_TEST = "1".equals(System.getenv("AI_TEST"));
+    private static long devTicks = 0;
+    private static Vec3 progStart = null, progLast = null;
+    private static double progPath = 0;
+    private static int deaths = 0;
+    private static String lastMove = "-";
+    private static String lastPath = "-"; // which branch of applyAIDecision ran
+    private static int attacks = 0;
+
+    static String hitDesc(Minecraft mc) {
+        if (mc.hitResult instanceof BlockHitResult b)
+            return BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(b.getBlockPos()).getBlock()).getPath() + "@" + b.getBlockPos().toShortString().replace(" ", "");
+        return mc.hitResult == null ? "null" : mc.hitResult.getType().toString();
+    }
+
+    static void tickProgress(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        devTicks++;
+        Vec3 pos = p.position();
+        if (progStart == null) { progStart = pos; progLast = pos; }
+        progPath += Math.sqrt(horizSqr(pos, progLast));
+        progLast = pos;
+
+        if (AI_TEST) {
+            if (p.isDeadOrDying() || (mc.gui.screen() != null && mc.gui.screen().getClass().getSimpleName().contains("Death"))) {
+                deaths++;
+                p.respawn();
+                YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("DEATH #{} (hp was {})", deaths, (int) p.getHealth());
+            }
+            if ("wood".equals(System.getenv("AI_MODE"))) {
+                // Survival stages: daytime, no gifts, no summons
+                if (devTicks == 40) p.connection.sendCommand("time set day");
+                if (devTicks == 60) p.connection.sendCommand("gamerule advance_time false");
+            } else {
+            if (devTicks == 40) p.connection.sendCommand("difficulty normal");
+            if (devTicks == 60) p.connection.sendCommand("time set midnight");
+            if (devTicks == 80) p.connection.sendCommand("give @s minecraft:iron_sword");
+            // A zombie 6 blocks away every 30s to exercise combat
+            if (devTicks > 200 && devTicks % 600 == 0) p.connection.sendCommand("summon minecraft:zombie ~6 ~ ~");
+            }
+        }
+
+        if (devTicks % 100 == 0) {
+            LivingEntity h = nearestHostile(mc, 16);
+            YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info(
+                "PROGRESS t={}s pos={},{},{} fromStart={} path={} hp={} deaths={} dig={} stage={} atk={} inv={} tgt={} hit={} scr={} move={}/{} keys={} F={} hostile={}",
+                devTicks / 20, (int) pos.x, (int) pos.y, (int) pos.z,
+                (int) Math.sqrt(horizSqr(pos, progStart)), (int) progPath, (int) p.getHealth(), deaths,
+                digging, stuckStage, attacks, invSummary(p), gatherTarget == null ? "-" : gatherTarget.toShortString(),
+                hitDesc(mc), mc.gui.screen() == null ? "-" : mc.gui.screen().getClass().getSimpleName(), lastMove, lastPath,
+                (mc.options.keyUp.isDown() ? "W" : "") + (mc.options.keyLeft.isDown() ? "A" : "") + (mc.options.keyRight.isDown() ? "D" : "")
+                    + (mc.options.keyDown.isDown() ? "S" : "") + (mc.options.keyJump.isDown() ? "J" : "") + (mc.options.keySprint.isDown() ? "R" : "")
+                    + (mc.options.keyAttack.isDown() ? "M" : ""),
+                scanDir(mc.level, p.blockPosition(), p.getDirection(), 3),
+                h == null ? "none" : BuiltInRegistries.ENTITY_TYPE.getKey(h.getType()).getPath() + "@" + (int) Math.sqrt(h.distanceToSqr(p)));
+        }
+    }
+
+    private static double horizSqr(Vec3 a, Vec3 b) {
+        double dx = a.x - b.x, dz = a.z - b.z;
+        return dx * dx + dz * dz;
+    }
+
+    /** Runs every tick: escalating wall recovery (jump -> turn right -> turn left -> face front and dig). */
+    static void tickUnstuck(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        boolean pushing = mc.options.keyUp.isDown() || mc.options.keyDown.isDown()
+            || mc.options.keyLeft.isDown() || mc.options.keyRight.isDown();
+        Vec3 pos = p.position();
+        boolean barelyMoved = tickLastPos != null && horizSqr(pos, tickLastPos) < 0.0004; // ignore Y: jumping in place is not progress
+        tickLastPos = pos;
+
+        // Dig mode ends when the hold runs out or we got through
+        if (digging && playerCommands.getOrDefault("mine", 0) <= 0) digging = false;
+        if (stuckOrigin != null && horizSqr(pos, stuckOrigin) > 1.5) { stuckOrigin = null; stuckStage = 0; digging = false; }
+
+        if (!pushing || !barelyMoved || p.isInWater() || digging) { stuckTicks = 0; return; }
+        if (++stuckTicks < STUCK_STEP_TICKS) return;
+        stuckTicks = 0;
+        if (stuckOrigin == null) stuckOrigin = pos;
+
+        stuckStage++;
+        if (gatherTarget != null) { // goal-driven: never turn away, jump then break whatever blocks the way
+            if (stuckStage == 1) aiHold("jump", 10);
+            else aiHold("mine", 40);
+            if (stuckStage > 8) { gatherBlacklist.add(gatherTarget); gatherTarget = null; stuckStage = 0; }
+            return;
+        }
+        switch (stuckStage) {
+            case 1 -> aiHold("jump", 10);
+            case 2 -> look(mc, 90, 0);
+            case 3 -> look(mc, 180, 0);   // net 270 = 90 left of the original heading
+            case 4 -> { look(mc, 90, 0); mc.player.setXRot(0); digging = true; aiHold("mine", DIG_TICKS); aiHold("forward", DIG_TICKS); }
+            default -> stuckStage = 0;
+        }
+    }
+
+    /** Runs every tick: lock on, chase, and hit the combat target directly (no crosshair/key dependence). */
+    static void tickCombat(Minecraft mc) {
+        if (combatTicks <= 0 || combatTarget == null) return;
+        LocalPlayer p = mc.player;
+        combatTicks--;
+        if (!combatTarget.isAlive() || shouldFlee(mc, p, combatTarget) || mc.gameMode == null) {
+            combatTarget = null;
+            combatTicks = 0;
+            return;
+        }
+        aimAt(mc, combatTarget);
+        double d2 = combatTarget.distanceToSqr(p);
+        if (d2 > 2.5 * 2.5) {
+            aiHold("forward", 3);
+            if (d2 > 5 * 5) aiHold("sprint", 3);
+        }
+        // Swing only when the cooldown is full so every hit does full damage
+        if (d2 <= 3.2 * 3.2 && p.getAttackStrengthScale(0.5f) >= 1.0f) {
+            attacks++;
+            mc.gameMode.attack(p, combatTarget);
+            p.swing(InteractionHand.MAIN_HAND);
+        }
+    }
+
+    private static final Set<String> RANGED = Set.of("skeleton", "stray", "bogged", "pillager", "blaze", "ghast");
+    private static boolean isRanged(LivingEntity m) {
+        return RANGED.contains(BuiltInRegistries.ENTITY_TYPE.getKey(m.getType()).getPath());
+    }
+    private static int hostileCount(Minecraft mc, double radius) {
+        int n = 0;
+        for (Entity e : mc.level.getEntities(mc.player, mc.player.getBoundingBox().inflate(radius))) {
+            if (e instanceof Enemy && e instanceof LivingEntity m && m.isAlive()) n++;
+        }
+        return n;
+    }
+    /** Run only when hurt AND swarmed by melee mobs. A lone mob dies faster to a sword than it can be outrun; ranged mobs shoot us in the back. */
+    private static boolean shouldFlee(Minecraft mc, LocalPlayer p, LivingEntity t) {
+        // Creepers explode in melee range: always back off instead of trading hits
+        if (BuiltInRegistries.ENTITY_TYPE.getKey(t.getType()).getPath().equals("creeper") && t.distanceToSqr(p) < 7 * 7) return true;
+        return p.getHealth() <= 6 && !isRanged(t) && hostileCount(mc, 8) >= 2;
+    }
+
+    // ---- Survival goals: Stage 1 = gather logs --------------------------------
+    private static final int GOAL_LOGS = 8;
+    private static BlockPos gatherTarget = null;
+    private static final Set<BlockPos> gatherBlacklist = new java.util.HashSet<>();
+    private static int gatherSearchCooldown = 0;
+    private static int gatherTicks = 0;
+
+    static int countLogs(LocalPlayer p) {
+        int n = 0;
+        for (int i = 0; i < p.getInventory().getContainerSize(); i++) {
+            ItemStack st = p.getInventory().getItem(i);
+            if (st.is(ItemTags.LOGS)) n += st.getCount();
+        }
+        return n;
+    }
+
+    private static BlockPos findLog(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        BlockPos o = p.blockPosition();
+        BlockPos best = null;
+        double bestD = Double.MAX_VALUE;
+        for (int dx = -20; dx <= 20; dx++) {
+            for (int dz = -20; dz <= 20; dz++) {
+                for (int dy = -3; dy <= 4; dy++) {
+                    BlockPos pos = o.offset(dx, dy, dz);
+                    if (gatherBlacklist.contains(pos)) continue;
+                    if (!mc.level.getBlockState(pos).is(BlockTags.LOGS)) continue;
+                    double d = pos.distSqr(o);
+                    if (d < bestD) { bestD = d; best = pos; }
+                }
+            }
+        }
+        return best;
+    }
+
+    private static void aimAtPos(LocalPlayer p, Vec3 t) {
+        Vec3 eye = p.getEyePosition();
+        double dx = t.x - eye.x, dy = t.y - eye.y, dz = t.z - eye.z;
+        double horiz = Math.sqrt(dx * dx + dz * dz);
+        p.setYRot((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0));
+        p.setXRot((float) Math.max(-90, Math.min(90, -Math.toDegrees(Math.atan2(dy, horiz)))));
+    }
+
+    /** Runs every tick: walk to the nearest log, face it, and hold attack until it breaks. */
+    static void tickGather(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        if (combatTicks > 0 || digging || p.isInWater() || craftStarted || mc.gui.screen() != null) return;
+        if (countLogs(p) >= GOAL_LOGS) { gatherTarget = null; return; }
+
+        if (gatherTarget != null && (!mc.level.getBlockState(gatherTarget).is(BlockTags.LOGS) || ++gatherTicks > 400)) {
+            if (gatherTicks > 400) gatherBlacklist.add(gatherTarget); // could not reach it in 20s: give up on this one
+            gatherTarget = null;
+        }
+        if (gatherTarget == null) {
+            if (gatherSearchCooldown-- > 0) return;
+            gatherSearchCooldown = 20;
+            gatherTarget = findLog(mc);
+            gatherTicks = 0;
+            if (gatherTarget == null) return;
+        }
+
+        Vec3 c = Vec3.atCenterOf(gatherTarget);
+        aimAtPos(p, c);
+        double d = p.getEyePosition().distanceTo(c);
+        if (d > 3.4) {
+            aiHold("forward", 3);
+            if (d > 8) aiHold("sprint", 3);
+        } else {
+            aiHold("mine", 3);
+        }
+    }
+
+    // ---- Stage 2: planks -> crafting table -> sticks -> wooden pickaxe ----------
+    private static boolean craftStarted = false;
+    private static BlockPos tablePos = null;
+    private static int craftWait = 0;
+    private static boolean pendingTake = false; // recipe was placed; next step is shift-clicking the result slot
+    private static AbstractContainerMenu pendingMenu = null;
+    private static int craftFail = 0;
+    private static String craftNote = "-";
+
+    static int countItems(LocalPlayer p, Predicate<ItemStack> f) {
+        int n = 0;
+        for (int i = 0; i < p.getInventory().getContainerSize(); i++) {
+            ItemStack st = p.getInventory().getItem(i);
+            if (!st.isEmpty() && f.test(st)) n += st.getCount();
+        }
+        return n;
+    }
+    static boolean hasPickaxe(LocalPlayer p) { return countItems(p, st -> st.is(ItemTags.PICKAXES)) > 0; }
+
+    static String invSummary(LocalPlayer p) {
+        return "L" + countLogs(p) + "/P" + countItems(p, st -> st.is(ItemTags.PLANKS)) + "/S" + countItems(p, st -> st.is(Items.STICK))
+            + "/T" + countItems(p, st -> st.is(Items.CRAFTING_TABLE)) + "/PK" + countItems(p, st -> st.is(ItemTags.PICKAXES)) + " " + craftNote;
+    }
+
+    /** Ask the server to fill the grid with an unlocked recipe whose result matches. */
+    private static boolean craftOnce(Minecraft mc, AbstractContainerMenu menu, Predicate<ItemStack> want) {
+        LocalPlayer p = mc.player;
+        StackedItemContents sc = new StackedItemContents();
+        p.getInventory().fillStackedContents(sc);
+        ContextMap ctx = SlotDisplayContext.fromLevel(mc.level);
+        for (RecipeCollection col : p.getRecipeBook().getCollections()) {
+            for (RecipeDisplayEntry e : col.getRecipes()) {
+                List<ItemStack> res = e.resultItems(ctx);
+                if (res.isEmpty() || !want.test(res.get(0)) || !e.canCraft(sc)) continue;
+                mc.gameMode.handlePlaceRecipe(menu.containerId, e.id(), false);
+                pendingTake = true;
+                pendingMenu = menu;
+                craftWait = 8;
+                return true;
+            }
+        }
+        craftFail++;
+        return false;
+    }
+
+    private static boolean placeTable(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        int slot = -1;
+        for (int i = 0; i < 9; i++) if (p.getInventory().getItem(i).is(Items.CRAFTING_TABLE)) slot = i;
+        if (slot < 0) { craftNote = "table-not-in-hotbar"; craftFail++; return false; }
+        for (Direction d : Direction.Plane.HORIZONTAL) {
+            BlockPos ground = p.blockPosition().relative(d, 1).below();
+            if (isSolid(mc.level, ground, mc.level.getBlockState(ground))
+                    && mc.level.getBlockState(ground.above()).isAir() && mc.level.getBlockState(ground.above(2)).isAir()) {
+                p.getInventory().setSelectedSlot(slot);
+                Vec3 top = Vec3.atCenterOf(ground).add(0, 0.5, 0);
+                aimAtPos(p, top);
+                mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(top, Direction.UP, ground, false));
+                p.swing(InteractionHand.MAIN_HAND);
+                tablePos = ground.above();
+                craftWait = 10;
+                craftNote = "table-placed";
+                return true;
+            }
+        }
+        craftNote = "no-spot-for-table";
+        craftFail++;
+        return false;
+    }
+
+    /** Runs every tick; a small state machine driven by what is in the inventory. */
+    static void tickCraft(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        boolean inTable = p.containerMenu instanceof CraftingMenu;
+        if (mc.gui.screen() != null && !inTable) return;
+        if (craftWait > 0) { craftWait--; return; }
+        if (hasPickaxe(p)) {
+            if (inTable) mc.gui.setScreen(null);
+            craftNote = "done";
+            return;
+        }
+        if (!craftStarted) {
+            if (countLogs(p) >= GOAL_LOGS) craftStarted = true; else return;
+        }
+        if (craftFail > 12) { craftNote = "gave-up"; if (inTable) mc.gui.setScreen(null); return; }
+
+        if (pendingTake) {
+            pendingTake = false;
+            mc.gameMode.handleContainerInput(pendingMenu.containerId, 0, 0, ContainerInput.QUICK_MOVE, p);
+            craftWait = 6;
+            return;
+        }
+
+        int planks = countItems(p, st -> st.is(ItemTags.PLANKS));
+        int sticks = countItems(p, st -> st.is(Items.STICK));
+        int tables = countItems(p, st -> st.is(Items.CRAFTING_TABLE));
+
+        if (inTable) {
+            craftNote = "pickaxe";
+            craftOnce(mc, p.containerMenu, st -> st.is(Items.WOODEN_PICKAXE));
+            return;
+        }
+
+        if (tablePos != null && !mc.level.getBlockState(tablePos).is(Blocks.CRAFTING_TABLE)) tablePos = null;
+        if (tablePos != null) { // table is down: step up to it and open it
+            Vec3 c = Vec3.atCenterOf(tablePos);
+            aimAtPos(p, c);
+            if (p.getEyePosition().distanceTo(c) > 3.5) { aiHold("forward", 3); return; }
+            craftNote = "open-table";
+            mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(c, Direction.UP, tablePos, false));
+            craftWait = 15;
+            return;
+        }
+
+        boolean haveTable = tables > 0;
+        int needPlanks = (haveTable ? 0 : 4) + (sticks >= 2 ? 0 : 2) + 3;
+        if (planks < needPlanks) { craftNote = "planks"; craftOnce(mc, p.inventoryMenu, st -> st.is(ItemTags.PLANKS)); }
+        else if (!haveTable)     { craftNote = "table";  craftOnce(mc, p.inventoryMenu, st -> st.is(Items.CRAFTING_TABLE)); }
+        else if (sticks < 2)     { craftNote = "sticks"; craftOnce(mc, p.inventoryMenu, st -> st.is(Items.STICK)); }
+        else                     { craftNote = "place";  placeTable(mc); }
+    }
+
+    private static boolean isFree(String scan) {
+        return scan.equals("clear") || scan.startsWith("step");
+    }
+    private static boolean turnLeftNext = false;
+
+    /** If a wall/drop/lava/water is within 2 blocks ahead: turn to a free side, else dig or turn around. */
+    private static boolean steerAroundObstacle(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        ClientLevel lvl = mc.level;
+        BlockPos o = p.blockPosition();
+        Direction f = p.getDirection();
+        String ahead = scanDir(lvl, o, f, 2);
+        if (isFree(ahead)) return false;
+
+        boolean lf = isFree(scanDir(lvl, o, f.getCounterClockWise(), 3));
+        boolean rf = isFree(scanDir(lvl, o, f.getClockWise(), 3));
+        if (lf || rf) {
+            boolean goLeft = lf && (!rf || turnLeftNext);
+            turnLeftNext = !turnLeftNext;
+            look(mc, goLeft ? -90 : 90, 0);
+        } else if (ahead.startsWith("wall")) {
+            p.setXRot(0);
+            digging = true;
+            aiHold("mine", DIG_TICKS);
+        } else {
+            look(mc, 180, 0);
+        }
+        aiHold("forward", AI_HOLD_TICKS);
+        return true;
+    }
 
     /** In water: face the nearest shore (solid block with open air above) and swim to it. */
     private static void escapeWater(Minecraft mc) {
@@ -286,93 +674,90 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             aiHold("forward", AI_HOLD_TICKS);
         }
         aiHold("jump", AI_HOLD_TICKS); // swim up
-        lastWantedMove = false;
-        stuckCount = 0;
     }
 
     static void applyAIDecision(Minecraft mc, JsonObject json) {
         String move = aiChoice(json, "move");
+        lastMove = move;
         LocalPlayer p = mc.player;
         LivingEntity target = nearestHostile(mc, 8);
-        boolean hostileClose = target != null && target.distanceToSqr(p) < 25;
 
-        // Stuck detection (AI or chat wanted movement, but we barely moved)
-        Vec3 pos = p.position();
-        boolean chatMoving = false;
-        for (String k : List.of("forward", "backward", "left", "right")) {
-            if (playerCommands.getOrDefault(k, 0) > 0) chatMoving = true;
+        // Gathering owns the keys every tick; releasing them here would reset block-breaking progress
+        if (gatherTarget != null && !(target != null && p.hasLineOfSight(target)) && !p.isInWater()) {
+            lastPath = "gather";
+            return;
         }
-        boolean wanted = lastWantedMove || chatMoving;
-        stuckCount = (lastDecisionPos != null && wanted && pos.distanceToSqr(lastDecisionPos) < 0.25) ? stuckCount + 1 : 0;
-        lastDecisionPos = pos;
-        lastWantedMove = !move.equals("stop") && !move.equals("none");
 
-        // Dig ends once we moved forward (block broke) or the hold ran out
-        if (digging && (stuckCount == 0 || playerCommands.getOrDefault("mine", 0) <= 0)) digging = false;
-
-        // Release last round's AI keys; when stuck also release chat-held ones
-        boolean stuck = stuckCount >= 2;
+        // Release last round's AI keys (chat toggles stay, dig keys stay)
         for (String k : AI_KEYS) {
             if (digging && (k.equals("mine") || k.equals("forward"))) continue;
-            if (stuck || playerCommands.getOrDefault(k, 0) < CHAT_HOLD_THRESHOLD) playerCommands.put(k, 0);
+            if (playerCommands.getOrDefault(k, 0) < CHAT_HOLD_THRESHOLD) playerCommands.put(k, 0);
         }
 
-        // Drowning comes first: ignore the AI until we are out of the water
+        // 1. Drowning comes first
         if (p.isInWater()) {
+            lastPath = "water";
             digging = false;
             escapeWater(mc);
             return;
         }
 
-        // Keep digging until the block breaks; skip everything else so the camera stays put
+        // 3. Combat is rule-based, not up to the model: fight when healthy, run when hurt
+        if (target != null && p.hasLineOfSight(target)) {
+            double d2 = target.distanceToSqr(p);
+            lastPath = "combat";
+            if (digging) { digging = false; playerCommands.put("mine", 0); }
+            if (shouldFlee(mc, p, target)) {
+                aimAt(mc, target);
+                look(mc, 180, 0);
+                if (!steerAroundObstacle(mc)) aiHold("forward", AI_HOLD_TICKS);
+                aiHold("sprint", AI_HOLD_TICKS);
+                combatTicks = 0;
+            } else {
+                combatTarget = target;
+                combatTicks = 80; // tickCombat chases and attacks every tick for up to 4s
+                aimAt(mc, target);
+            }
+            return;
+        }
+        combatTicks = 0;
+
+        // 3b. Keep digging until the block breaks
         if (digging) {
+            lastPath = "dig";
             aiHold("forward", AI_HOLD_TICKS);
-            lastWantedMove = true;
             return;
         }
 
-        // Movement
+        // Crafting: stand still near the table; tickCraft drives everything
+        if (craftStarted && !hasPickaxe(p)) {
+            lastPath = "craft";
+            return;
+        }
+
+        lastPath = "model";
+
+        // 4. Otherwise follow the model, steering around walls/hazards it can't judge
         boolean forward = false;
         switch (move) {
-            case "forward" -> forward = true;
-            case "backward", "left", "right" -> aiHold(move, AI_HOLD_TICKS);
-            case "attack" -> {
-                if (target != null) {
-                    aimAt(mc, target);
-                    double d2 = target.distanceToSqr(p);
-                    if (d2 > 2.5 * 2.5) forward = true;
-                    if (d2 <= 3.5 * 3.5) aiHold("mine", AI_HOLD_TICKS);
-                }
-            }
+            case "left"  -> { look(mc, -45, 0); forward = true; }
+            case "right" -> { look(mc, 45, 0); forward = true; }
             case "flee" -> {
-                if (target != null) { aimAt(mc, target); look(mc, 180, 0); forward = true; aiHold("sprint", AI_HOLD_TICKS); }
+                if (target != null) { aimAt(mc, target); look(mc, 180, 0); }
+                forward = true;
             }
-            default -> {} // stop
+            default -> forward = true; // "forward", "stop" or anything else: never idle, keep exploring (steering avoids walls)
         }
-        if (forward) {
+        if (forward && !steerAroundObstacle(mc)) {
             aiHold("forward", AI_HOLD_TICKS);
-            if (!hostileClose && move.equals("forward")) aiHold("sprint", AI_HOLD_TICKS);
-        }
-
-        // Auto jump: blocked by a ledge, or swimming
-        if (p.horizontalCollision || p.isInWater()) aiHold("jump", 4);
-
-        // Stuck recovery, escalating: jump -> turn 90 -> dig
-        if (stuck) {
-            aiHold("forward", AI_HOLD_TICKS);
-            aiHold("jump", 4);
-            if (stuckCount >= 5) {
-                digging = true;
-                aiHold("mine", DIG_TICKS);
-            } else if (stuckCount >= 3) {
-                look(mc, stuckCount % 2 == 0 ? 90 : -90, 0);
-            }
+            aiHold("sprint", AI_HOLD_TICKS);
         }
     }
 
     private static boolean aiThinking = false;
     static void askAI() {
         aiThinking = true;
+        final long t0 = System.nanoTime();
         // Shell out to curl: macOS Local Network privacy blocks the JVM but not curl
         CompletableFuture.supplyAsync(() -> {
                 try {
@@ -389,7 +774,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             })
             .thenAccept(body -> {
                 JsonObject json = new Gson().fromJson(body, JsonObject.class);
-                YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("AI decision: {}", body);
+                YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("AI_LATENCY {} ms decision: {}", (System.nanoTime() - t0) / 1_000_000, body.trim());
                 Minecraft mc = Minecraft.getInstance();
                 mc.execute(() -> {
                     if (mc.player == null) return;
@@ -514,6 +899,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
             if (frames <= 0) {
                 direction = false;
+                command.setValue(0); // expired: otherwise it sticks at 1 and "is it still held?" checks never see 0
             }
             else {
                 command.setValue(frames);
@@ -537,6 +923,14 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             if (key != null) {
                 key.setDown(direction);
             }
+        }
+
+        if (mc.player != null && mc.level != null) {
+            tickCombat(mc);
+            tickGather(mc);
+            tickCraft(mc);
+            tickUnstuck(mc);
+            tickProgress(mc);
         }
 
         // Per-tick swim: in water always hold jump so the player rises and keeps their head above water
