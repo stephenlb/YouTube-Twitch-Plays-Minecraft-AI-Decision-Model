@@ -14,14 +14,12 @@ model = model.to("mps")
 QUESTIONS = {
     "move": {
         "type": "choice",
-        "instructions": "Best move? Avoid lava, water and drops.",
+        "instructions": "Move?",
         "criteria": {
-            "forward": "path clear",
-            "backward": "back away",
+            "forward": "clear ahead",
             "left": "left clear",
             "right": "right clear",
-            "attack": "hostile near, healthy",
-            "flee": "hostile near, low hp",
+            "flee": "danger",
             "stop": "blocked",
         },
     },
