@@ -585,8 +585,10 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         int slot = -1;
         for (int i = 0; i < 9; i++) if (p.getInventory().getItem(i).is(Items.CRAFTING_TABLE)) slot = i;
         if (slot < 0) { craftNote = "table-not-in-hotbar"; craftFail++; return false; }
-        for (Direction d : Direction.Plane.HORIZONTAL) {
-            BlockPos ground = p.blockPosition().relative(d, 1).below();
+        for (int dist = 1; dist <= 2; dist++) for (Direction d : Direction.Plane.HORIZONTAL) {
+            BlockPos ground = p.blockPosition().relative(d, dist).below();
+            // The target cell must not overlap the player's own hitbox, or the server refuses the placement
+            if (horizSqr(p.position(), Vec3.atCenterOf(ground)) < 1.1 * 1.1) continue;
             if (isSolid(mc.level, ground, mc.level.getBlockState(ground))
                     && mc.level.getBlockState(ground.above()).isAir() && mc.level.getBlockState(ground.above(2)).isAir()) {
                 p.getInventory().setSelectedSlot(slot);
@@ -596,6 +598,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 p.swing(InteractionHand.MAIN_HAND);
                 tablePos = ground.above();
                 craftWait = 10;
+                YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("TABLE place result={} at {}", r, ground);
                 craftNote = "place:" + r + "@" + ground.toShortString().replace(" ", "") + "/slot" + slot + "/held=" + p.getMainHandItem().getItem();
                 return true;
             }
@@ -649,7 +652,16 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             return;
         }
         final net.minecraft.world.item.Item goal = head;
-        if (craftFail > 12) { craftNote = "gave-up"; if (inTable) mc.gui.setScreen(null); return; }
+        if (craftFail > 12) { // stuck on something location-dependent: step somewhere else and try again
+            craftNote = "retry-elsewhere";
+            if (inTable) mc.gui.setScreen(null);
+            craftFail = 6;
+            tablePos = null;
+            wanderTicks = 60;
+            p.setYRot(RNG.nextFloat() * 360f - 180f);
+            craftWait = 80;
+            return;
+        }
 
         if (inTable) {
             craftNote = "craft-" + BuiltInRegistries.ITEM.getKey(goal).getPath();
@@ -726,16 +738,19 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         String ls = scanDir(lvl, o, f.getCounterClockWise(), 3), rs = scanDir(lvl, o, f.getClockWise(), 3);
         boolean lf = isFree(ls) || (allowWater && ls.startsWith("water"));
         boolean rf = isFree(rs) || (allowWater && rs.startsWith("water"));
+        String bs = scanDir(lvl, o, f.getOpposite(), 3);
+        boolean behindOpen = isFree(bs) || (allowWater && bs.startsWith("water"));
         if (lf || rf) {
             boolean goLeft = lf && (!rf || turnLeftNext);
             turnLeftNext = !turnLeftNext;
             look(mc, goLeft ? -90 : 90, 0);
-        } else if (ahead.startsWith("wall")) {
+        } else if (ahead.startsWith("wall") && !(behindOpen && wdLevel < 2)) {
+            // Boxed in with no open way back (or the watchdog already failed twice): tunnel through
             p.setXRot(0);
             digging = true;
             aiHold("mine", DIG_TICKS);
         } else {
-            look(mc, 180, 0);
+            look(mc, 180, 0); // dead end / tunnel: walk back out instead of digging deeper
         }
         aiHold("forward", AI_HOLD_TICKS);
         return true;
@@ -826,7 +841,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
 
         // Crafting: stand still near the table; tickCraft drives everything
-        if (stage == 2 || stage == 4) {
+        if ((stage == 2 || stage == 4) && wanderTicks <= 0) {
             lastPath = "craft";
             return;
         }
