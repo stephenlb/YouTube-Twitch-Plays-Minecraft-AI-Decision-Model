@@ -3,7 +3,7 @@ from transformers import AutoModelForMultimodalLM, AutoTokenizer
 from fastapi import FastAPI, Request
 
 repo = "stephenlb/system-one-model"
-tokenizer = AutoTokenizer.from_pretrained(repo)
+tokenizer = AutoTokenizer.from_pretrained(repo, trust_remote_code=True)
 model = AutoModelForMultimodalLM.from_pretrained(
     repo, trust_remote_code=True, dtype="bfloat16", device_map="auto"
 )
