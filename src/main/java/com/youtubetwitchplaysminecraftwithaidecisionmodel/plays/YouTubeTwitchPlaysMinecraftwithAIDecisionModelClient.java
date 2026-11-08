@@ -70,6 +70,17 @@ keySpectatorOutlines — Highlight players in spectator
 // TODO add NeoForge Logo
 // TODO bits - when donos Deena - do somethign in the game
 
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.core.registries.BuiltInRegistries;
+
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
@@ -198,12 +209,151 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
     }
 
+    // ---- AI decision handling -------------------------------------------------
+    private static final int AI_HOLD_TICKS = 10;
+    private static final int CHAT_HOLD_THRESHOLD = 1_000_000; // chat toggles hold ~10M ticks
+    private static final List<String> AI_KEYS = List.of(
+        "forward", "backward", "left", "right", "sprint", "jump", "crouch", "mine", "use"
+    );
+
+    private static String aiChoice(JsonObject json, String question) {
+        if (!json.has(question) || !json.get(question).isJsonObject()) return "none";
+        JsonObject o = json.getAsJsonObject(question);
+        return o.has("choice") && !o.get("choice").isJsonNull() ? o.get("choice").getAsString() : "none";
+    }
+
+    /** Hold a key for a few ticks unless chat is already holding it on. */
+    private static void aiHold(String key, int ticks) {
+        if (playerCommands.getOrDefault(key, 0) >= CHAT_HOLD_THRESHOLD) return;
+        playerCommands.put(key, ticks);
+    }
+
+    private static LivingEntity nearestHostile(Minecraft mc, double radius) {
+        LivingEntity best = null;
+        for (Entity e : mc.level.getEntities(mc.player, mc.player.getBoundingBox().inflate(radius))) {
+            if (e instanceof Enemy && e instanceof LivingEntity m && m.isAlive()) {
+                if (best == null || m.distanceToSqr(mc.player) < best.distanceToSqr(mc.player)) best = m;
+            }
+        }
+        return best;
+    }
+
+    /** Snap the camera onto the target's body. */
+    private static void aimAt(Minecraft mc, LivingEntity target) {
+        LocalPlayer p = mc.player;
+        Vec3 eye = p.getEyePosition();
+        Vec3 t = target.position().add(0, target.getBbHeight() * 0.5, 0);
+        double dx = t.x - eye.x, dy = t.y - eye.y, dz = t.z - eye.z;
+        double horiz = Math.sqrt(dx * dx + dz * dz);
+        p.setYRot((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0));
+        p.setXRot((float) Math.max(-90, Math.min(90, -Math.toDegrees(Math.atan2(dy, horiz)))));
+    }
+
+    // Stuck detection: consecutive decisions where the player tried to move but barely did
+    private static volatile int stuckCount = 0;
+    private static Vec3 lastDecisionPos = null;
+    private static boolean lastWantedMove = false;
+
+    private static boolean isMoveChoice(String move) {
+        return !move.equals("stop") && !move.equals("none");
+    }
+
+    static void applyAIDecision(Minecraft mc, JsonObject json) {
+        String move = aiChoice(json, "movement");
+        String combat = aiChoice(json, "combat");
+        String look = aiChoice(json, "look");
+        String sprint = aiChoice(json, "sprint");
+        String jump = aiChoice(json, "jump");
+        String crouch = aiChoice(json, "crouch");
+        String mine = aiChoice(json, "mine");
+        LivingEntity target = nearestHostile(mc, 8);
+
+        // Did the last decision actually move us?
+        Vec3 pos = mc.player.position();
+        boolean chatHoldingMove = false;
+        for (String k : List.of("forward", "backward", "left", "right")) {
+            if (playerCommands.getOrDefault(k, 0) > 0) chatHoldingMove = true;
+        }
+        if (lastDecisionPos != null && (lastWantedMove || chatHoldingMove)
+                && pos.distanceToSqr(lastDecisionPos) < 0.25) {
+            stuckCount++;
+        } else {
+            stuckCount = 0;
+        }
+        lastDecisionPos = pos;
+        lastWantedMove = isMoveChoice(move);
+
+        // Release keys the AI was holding last round. Chat-held toggles stay, unless we are stuck:
+        // a chat "forward" held into a wall would otherwise block the AI forever.
+        boolean stuck = stuckCount >= 2;
+        for (String k : AI_KEYS) {
+            if (stuck || playerCommands.getOrDefault(k, 0) < CHAT_HOLD_THRESHOLD) playerCommands.put(k, 0);
+        }
+
+        // Camera
+        switch (look) {
+            case "left_90"     -> look(mc, -90, 0);
+            case "right_90"    -> look(mc, 90, 0);
+            case "up"          -> look(mc, 0, -30);
+            case "face_mob"    -> { if (target != null) aimAt(mc, target); }
+            case "turn_around" -> look(mc, 180, 0);
+            case "left"        -> look(mc, -30, 0);
+            case "right"       -> look(mc, 30, 0);
+            case "down"        -> look(mc, 0, 30);
+            default -> {}
+        }
+
+        // Movement
+        switch (move) {
+            case "forward", "backward", "left", "right" -> aiHold(move, AI_HOLD_TICKS);
+            case "jump_forward" -> { aiHold("forward", AI_HOLD_TICKS); aiHold("jump", AI_HOLD_TICKS); }
+            case "sprint_forward" -> { aiHold("forward", AI_HOLD_TICKS); aiHold("sprint", AI_HOLD_TICKS); }
+            case "flee" -> {
+                if (target != null) {
+                    aimAt(mc, target);
+                    look(mc, 180, 0);
+                    aiHold("forward", AI_HOLD_TICKS);
+                    aiHold("sprint", AI_HOLD_TICKS);
+                }
+            }
+            case "approach" -> {
+                if (target != null) {
+                    aimAt(mc, target);
+                    aiHold("forward", AI_HOLD_TICKS);
+                    if (target.distanceToSqr(mc.player) > 16) aiHold("sprint", AI_HOLD_TICKS);
+                }
+            }
+            default -> {} // "stop"
+        }
+
+        // Modifiers: sprint / jump / crouch / mine
+        if (sprint.equals("on")) aiHold("sprint", AI_HOLD_TICKS);
+        else if (playerCommands.getOrDefault("sprint", 0) < CHAT_HOLD_THRESHOLD) playerCommands.put("sprint", 0);
+        if (jump.equals("jump")) aiHold("jump", 4);
+        if (crouch.equals("sneak")) aiHold("crouch", AI_HOLD_TICKS);
+        if (mine.equals("break_block")) aiHold("mine", AI_HOLD_TICKS);
+
+        // Combat
+        switch (combat) {
+            case "attack" -> {
+                if (target != null) {
+                    aimAt(mc, target);
+                    if (target.distanceToSqr(mc.player) <= 3.5 * 3.5) aiHold("mine", AI_HOLD_TICKS);
+                }
+            }
+            case "block" -> aiHold("use", AI_HOLD_TICKS);
+            default -> {}
+        }
+    }
+
     private static boolean aiThinking = false;
-    static void askAI(String question) {
+    static void askAI() {
         aiThinking = true;
         // Shell out to curl: macOS Local Network privacy blocks the JVM but not curl
         CompletableFuture.supplyAsync(() -> {
                 try {
+                    String question = getClientWorldStateString(5, 5);
+                    //String question = "new world";
                     Process p = new ProcessBuilder("curl", "-s", "-m", "10",
                         "http://192.168.50.50:8000", "--data", question).start();
                     String out = new String(p.getInputStream().readAllBytes());
@@ -215,13 +365,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             })
             .thenAccept(body -> {
                 JsonObject json = new Gson().fromJson(body, JsonObject.class);
-                String choice = json.getAsJsonObject("movement").get("choice").getAsString();
-                YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("AI choice: {}", choice);
+                YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("AI decision: {}", body);
                 Minecraft mc = Minecraft.getInstance();
                 mc.execute(() -> {
                     if (mc.player == null) return;
-                    // TODO fix!!!
-                    //youtubeTwitchCommands(choice);
+                    applyAIDecision(mc, json);
                 });
             })
             .whenComplete((ok, ex) -> {
@@ -297,17 +445,15 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     }
 
     private static final Set<String> SLASH_COMMANDS = Set.of(
-        "/execute",
+        //"/execute",
         "/tp", "/weather", "/give",
         "/summon", "/add", "/gamemode",
         "/time", "/effect", 
         "/attribute", "/kill",
         "/seed", "/gamerule", //, "/particle",
-        "/playsound", "/worldborder"
-        // , "/title", "/data" // , "/attribute"
-        // , "/fill", "/attribute"
-        // "/fill", 
-        // 
+        "/playsound"//, "/worldborder",
+        // , "/title", "/data"
+        //"/fill", "/setblock"
         // "/setblock",
         // "/exectue"
     );
@@ -320,12 +466,19 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         mc.player.connection.sendCommand(message.trim().substring(1));
     }
 
+    /*
+    @SubscribeEvent
+    static void onServerTick(ClientTickEvent.Post event) {
+        YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.error("SERVER TICK EVENT");
+    }
+    */
+
     @SubscribeEvent
     static void onClientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
 
         if (mc == null) return;
-        if (!aiThinking && mc.player != null) askAI("new world");
+        if (!aiThinking && mc.player != null) askAI();
         if (!subscribed) subscribe();
 
         for (Map.Entry<String, Integer> command : playerCommands.entrySet()) {
@@ -346,6 +499,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 case "smooth"      -> mc.options.keySmoothCamera;
                 case "inventory"   -> mc.options.keyInventory;
                 case "mine"        -> mc.options.keyAttack;
+                case "use"         -> mc.options.keyUse;
                 case "sprint"      -> mc.options.keySprint;
                 case "jump"        -> mc.options.keyJump;
                 case "crouch"      -> mc.options.keyShift;
@@ -463,5 +617,101 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 }
             }
         );
+    }
+    /**
+     * Compact world state for the LLM (~100-200 chars instead of thousands of blocks).
+     * Example:
+     *   P:120,64,-30 facing:north hp:20 food:18 ground:1
+     *   F:step@2 L:clear R:wall@1 B:drop3@1
+     *   M:zombie,F,3 M:cow,L,5
+     * bRad = how many blocks ahead to scan in each direction, mRad = mob radius.
+     */
+    public static String getClientWorldStateString(int bRad, int mRad) {
+        Minecraft mc = Minecraft.getInstance();
+        ClientLevel lvl = mc.level;
+        LocalPlayer p = mc.player;
+        if (lvl == null || p == null) return "No world state available";
+
+        Direction facing = p.getDirection();
+        BlockPos pPos = p.blockPosition();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("P:").append(pPos.getX()).append(",").append(pPos.getY()).append(",").append(pPos.getZ())
+          .append(" facing:").append(facing.getName())
+          .append(" hp:").append((int) p.getHealth())
+          .append(" food:").append(p.getFoodData().getFoodLevel())
+          .append(" ground:").append(p.onGround() ? 1 : 0)
+          .append(p.isInWater() ? " in:water" : "")
+          .append(p.isInLava() ? " in:lava" : "")
+          .append(p.isOnFire() ? " fire:1" : "")
+          .append(stuckCount > 0 ? " stuck:" + stuckCount : "")
+          .append("\n");
+
+        // Terrain: first obstacle/hazard in each relative direction
+        sb.append("F:").append(scanDir(lvl, pPos, facing, bRad))
+          .append(" L:").append(scanDir(lvl, pPos, facing.getCounterClockWise(), bRad))
+          .append(" R:").append(scanDir(lvl, pPos, facing.getClockWise(), bRad))
+          .append(" B:").append(scanDir(lvl, pPos, facing.getOpposite(), bRad))
+          .append("\n");
+
+        // Mobs: nearest 3 only, with relative direction (F/B/L/R) and distance
+        List<LivingEntity> mobs = new ArrayList<>();
+        for (Entity e : lvl.getEntities(p, p.getBoundingBox().inflate(mRad))) {
+            if (e instanceof LivingEntity m) mobs.add(m);
+        }
+        // Hostile mobs first, then by distance
+        mobs.sort((a, b) -> {
+            int h = Boolean.compare(b instanceof Enemy, a instanceof Enemy);
+            return h != 0 ? h : Double.compare(a.distanceToSqr(p), b.distanceToSqr(p));
+        });
+        for (int i = 0; i < Math.min(3, mobs.size()); i++) {
+            LivingEntity m = mobs.get(i);
+            String id = BuiltInRegistries.ENTITY_TYPE.getKey(m.getType()).getPath();
+            double dx = m.getX() - p.getX(), dz = m.getZ() - p.getZ();
+            double fwd = dx * facing.getStepX() + dz * facing.getStepZ();
+            Direction right = facing.getClockWise();
+            double rgt = dx * right.getStepX() + dz * right.getStepZ();
+            String rel = Math.abs(fwd) >= Math.abs(rgt) ? (fwd >= 0 ? "F" : "B") : (rgt >= 0 ? "R" : "L");
+            sb.append("M:").append(id).append(",").append(rel).append(",").append((int) Math.sqrt(m.distanceToSqr(p)))
+              .append(m instanceof Enemy ? ",hostile" : "").append(" ");
+        }
+        return sb.toString().trim();
+    }
+
+    /** Describes the first thing that matters walking up to `max` blocks in direction d. */
+    private static String scanDir(ClientLevel lvl, BlockPos origin, Direction d, int max) {
+        for (int dist = 1; dist <= max; dist++) {
+            BlockPos feet = origin.relative(d, dist);
+            BlockState f0 = lvl.getBlockState(feet);
+            BlockState f1 = lvl.getBlockState(feet.above());
+            BlockState f2 = lvl.getBlockState(feet.above(2));
+
+            if (isLava(f0) || isLava(f1)) return "lava@" + dist;
+            if (isSolid(lvl, feet, f0)) {
+                // Blocked at feet level: 1-high step is jumpable, otherwise a wall
+                boolean headroom = !isSolid(lvl, feet.above(), f1) && !isSolid(lvl, feet.above(2), f2);
+                return (headroom ? "step@" : "wall@") + dist;
+            }
+            if (f0.getFluidState().isEmpty() == false) return "water@" + dist;
+
+            // Open at feet: look for ground below
+            int drop = 0;
+            BlockPos below = feet.below();
+            while (drop < 5 && !isSolid(lvl, below, lvl.getBlockState(below))) {
+                if (isLava(lvl.getBlockState(below))) return "lava@" + dist;
+                drop++;
+                below = below.below();
+            }
+            if (drop >= 2) return "drop" + (drop >= 5 ? "5+" : drop) + "@" + dist;
+        }
+        return "clear";
+    }
+
+    private static boolean isSolid(ClientLevel lvl, BlockPos pos, BlockState s) {
+        return !s.getCollisionShape(lvl, pos).isEmpty();
+    }
+
+    private static boolean isLava(BlockState s) {
+        return BuiltInRegistries.BLOCK.getKey(s.getBlock()).getPath().equals("lava");
     }
 }
