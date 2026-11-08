@@ -86,6 +86,7 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import java.util.function.Predicate;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.ItemTags;
@@ -388,6 +389,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             combatTicks = 0;
             return;
         }
+        selectHotbar(p, st -> st.is(ItemTags.SWORDS));
         aimAt(mc, combatTarget);
         double d2 = combatTarget.distanceToSqr(p);
         if (d2 > 2.5 * 2.5) {
@@ -436,23 +438,35 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         return n;
     }
 
-    private static BlockPos findLog(Minecraft mc) {
+    private static BlockPos findBlock(Minecraft mc, Predicate<BlockState> want) {
         LocalPlayer p = mc.player;
         BlockPos o = p.blockPosition();
         BlockPos best = null;
         double bestD = Double.MAX_VALUE;
         for (int dx = -20; dx <= 20; dx++) {
             for (int dz = -20; dz <= 20; dz++) {
-                for (int dy = -3; dy <= 4; dy++) {
+                for (int dy = -1; dy <= 3; dy++) { // reachable from the ground; never far below (that means digging down)
                     BlockPos pos = o.offset(dx, dy, dz);
                     if (gatherBlacklist.contains(pos)) continue;
-                    if (!mc.level.getBlockState(pos).is(BlockTags.LOGS)) continue;
+                    if (!want.test(mc.level.getBlockState(pos))) continue;
                     double d = pos.distSqr(o);
                     if (d < bestD) { bestD = d; best = pos; }
                 }
             }
         }
         return best;
+    }
+
+    /**
+     * Break a block through the game mode directly. Holding the attack key only mines while the OS window has
+     * the mouse grabbed, so the bot would sit idle until someone clicked in the window.
+     */
+    private static void mineBlock(Minecraft mc, BlockPos pos, Direction face) {
+        if (mc.gameMode.continueDestroyBlock(pos, face)) mc.player.swing(InteractionHand.MAIN_HAND);
+    }
+    private static void mineBlock(Minecraft mc, BlockPos pos) {
+        Vec3 e = mc.player.getEyePosition(), c = Vec3.atCenterOf(pos);
+        mineBlock(mc, pos, Direction.getApproximateNearest(e.x - c.x, e.y - c.y, e.z - c.z));
     }
 
     private static void aimAtPos(LocalPlayer p, Vec3 t) {
@@ -463,37 +477,66 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         p.setXRot((float) Math.max(-90, Math.min(90, -Math.toDegrees(Math.atan2(dy, horiz)))));
     }
 
-    /** Runs every tick: walk to the nearest log, face it, and hold attack until it breaks. */
+    // ---- Stage machine: 1 logs, 2 craft wooden pickaxe, 3 stone, 4 craft stone tools, 5 done (next: iron)
+    private static int stage = 1;
+    private static final int COBBLE_GOAL = 13; // stone pickaxe 3 + sword 2 + furnace 8
+    private static final java.util.ArrayDeque<net.minecraft.world.item.Item> craftQueue = new java.util.ArrayDeque<>();
+
+    private static Predicate<BlockState> gatherWanted() {
+        if (stage == 1) return st -> st.is(BlockTags.LOGS);
+        if (stage == 3) return st -> st.is(Blocks.STONE);
+        return null;
+    }
+
+    /** Hold the right tool: best pickaxe for stone, best sword for fights. */
+    private static void selectHotbar(LocalPlayer p, Predicate<ItemStack> pref) {
+        for (int i = 0; i < 9; i++) {
+            if (pref.test(p.getInventory().getItem(i))) { p.getInventory().setSelectedSlot(i); return; }
+        }
+    }
+
+    /** Runs every tick: walk to the nearest wanted block, face it, and hold attack until it breaks. */
     static void tickGather(Minecraft mc) {
         LocalPlayer p = mc.player;
-        if (combatTicks > 0 || digging || p.isInWater() || craftStarted || mc.gui.screen() != null) return;
-        if (countLogs(p) >= GOAL_LOGS) { gatherTarget = null; return; }
+        Predicate<BlockState> want = gatherWanted();
+        if (want == null || combatTicks > 0 || digging || p.isInWater() || mc.gui.screen() != null) { gatherTarget = null; return; }
+        if (stage == 1 && countLogs(p) >= GOAL_LOGS) { gatherTarget = null; return; }
+        if (stage == 3 && countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL) { gatherTarget = null; return; }
 
-        if (gatherTarget != null && (!mc.level.getBlockState(gatherTarget).is(BlockTags.LOGS) || ++gatherTicks > 400)) {
+        if (gatherTarget != null && (!want.test(mc.level.getBlockState(gatherTarget)) || ++gatherTicks > 400)) {
             if (gatherTicks > 400) gatherBlacklist.add(gatherTarget); // could not reach it in 20s: give up on this one
             gatherTarget = null;
         }
         if (gatherTarget == null) {
             if (gatherSearchCooldown-- > 0) return;
             gatherSearchCooldown = 20;
-            gatherTarget = findLog(mc);
+            gatherTarget = findBlock(mc, want);
             gatherTicks = 0;
             if (gatherTarget == null) return;
         }
 
+        if (stage == 3) { // stone only drops with a pickaxe in hand
+            selectHotbar(p, st -> st.is(Items.STONE_PICKAXE));
+            if (!p.getMainHandItem().is(Items.STONE_PICKAXE)) selectHotbar(p, st -> st.is(ItemTags.PICKAXES));
+        }
         Vec3 c = Vec3.atCenterOf(gatherTarget);
         aimAtPos(p, c);
         double d = p.getEyePosition().distanceTo(c);
+        double hd = Math.sqrt(horizSqr(p.position(), c));
+        if (d > 3.4 && hd < 1.2) { // standing right under it but out of reach: skip this one
+            gatherBlacklist.add(gatherTarget);
+            gatherTarget = null;
+            return;
+        }
         if (d > 3.4) {
             aiHold("forward", 3);
             if (d > 8) aiHold("sprint", 3);
         } else {
-            aiHold("mine", 3);
+            mineBlock(mc, gatherTarget);
         }
     }
 
     // ---- Stage 2: planks -> crafting table -> sticks -> wooden pickaxe ----------
-    private static boolean craftStarted = false;
     private static BlockPos tablePos = null;
     private static int craftWait = 0;
     private static boolean pendingTake = false; // recipe was placed; next step is shift-clicking the result slot
@@ -512,7 +555,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     static boolean hasPickaxe(LocalPlayer p) { return countItems(p, st -> st.is(ItemTags.PICKAXES)) > 0; }
 
     static String invSummary(LocalPlayer p) {
-        return "L" + countLogs(p) + "/P" + countItems(p, st -> st.is(ItemTags.PLANKS)) + "/S" + countItems(p, st -> st.is(Items.STICK))
+        return "st" + stage + " C" + countItems(p, st -> st.is(Items.COBBLESTONE)) + " L" + countLogs(p) + "/P" + countItems(p, st -> st.is(ItemTags.PLANKS)) + "/S" + countItems(p, st -> st.is(Items.STICK))
             + "/T" + countItems(p, st -> st.is(Items.CRAFTING_TABLE)) + "/PK" + countItems(p, st -> st.is(ItemTags.PICKAXES)) + " " + craftNote;
     }
 
@@ -549,11 +592,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 p.getInventory().setSelectedSlot(slot);
                 Vec3 top = Vec3.atCenterOf(ground).add(0, 0.5, 0);
                 aimAtPos(p, top);
-                mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(top, Direction.UP, ground, false));
+                net.minecraft.world.InteractionResult r = mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(top, Direction.UP, ground, false));
                 p.swing(InteractionHand.MAIN_HAND);
                 tablePos = ground.above();
                 craftWait = 10;
-                craftNote = "table-placed";
+                craftNote = "place:" + r + "@" + ground.toShortString().replace(" ", "") + "/slot" + slot + "/held=" + p.getMainHandItem().getItem();
                 return true;
             }
         }
@@ -562,21 +605,20 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         return false;
     }
 
-    /** Runs every tick; a small state machine driven by what is in the inventory. */
+    /** {planks, sticks} needed (besides cobble) for each craftable goal. */
+    private static int[] cost(net.minecraft.world.item.Item it) {
+        if (it == Items.WOODEN_PICKAXE) return new int[] {3, 2};
+        if (it == Items.STONE_PICKAXE) return new int[] {0, 2};
+        if (it == Items.STONE_SWORD) return new int[] {0, 1};
+        return new int[] {0, 0}; // furnace: cobble only
+    }
+
+    /** Runs every tick; crafts whatever craftQueue asks for, making planks, sticks and a table as needed. */
     static void tickCraft(Minecraft mc) {
         LocalPlayer p = mc.player;
         boolean inTable = p.containerMenu instanceof CraftingMenu;
         if (mc.gui.screen() != null && !inTable) return;
         if (craftWait > 0) { craftWait--; return; }
-        if (hasPickaxe(p)) {
-            if (inTable) mc.gui.setScreen(null);
-            craftNote = "done";
-            return;
-        }
-        if (!craftStarted) {
-            if (countLogs(p) >= GOAL_LOGS) craftStarted = true; else return;
-        }
-        if (craftFail > 12) { craftNote = "gave-up"; if (inTable) mc.gui.setScreen(null); return; }
 
         if (pendingTake) {
             pendingTake = false;
@@ -585,33 +627,85 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             return;
         }
 
+        // Stage transitions
+        if (stage == 1 && countLogs(p) >= GOAL_LOGS) { stage = 2; craftQueue.add(Items.WOODEN_PICKAXE); }
+        if (stage == 3 && countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL) {
+            stage = 4;
+            craftQueue.add(Items.STONE_PICKAXE);
+            craftQueue.add(Items.STONE_SWORD);
+            craftQueue.add(Items.FURNACE);
+        }
+        if (stage != 2 && stage != 4) return;
+
+        net.minecraft.world.item.Item head = craftQueue.peek();
+        if (head != null) {
+            final net.minecraft.world.item.Item h0 = head;
+            if (countItems(p, st -> st.is(h0)) > 0) { craftQueue.poll(); head = craftQueue.peek(); }
+        }
+        if (head == null) {
+            if (inTable) mc.gui.setScreen(null);
+            stage++;
+            craftNote = "stage" + stage;
+            return;
+        }
+        final net.minecraft.world.item.Item goal = head;
+        if (craftFail > 12) { craftNote = "gave-up"; if (inTable) mc.gui.setScreen(null); return; }
+
+        if (inTable) {
+            craftNote = "craft-" + BuiltInRegistries.ITEM.getKey(goal).getPath();
+            craftOnce(mc, p.containerMenu, st -> st.is(goal));
+            return;
+        }
+
+        int needSticks = 0, needPlanks = 0;
+        for (net.minecraft.world.item.Item it : craftQueue) { int[] c = cost(it); needPlanks += c[0]; needSticks += c[1]; }
         int planks = countItems(p, st -> st.is(ItemTags.PLANKS));
         int sticks = countItems(p, st -> st.is(Items.STICK));
         int tables = countItems(p, st -> st.is(Items.CRAFTING_TABLE));
 
-        if (inTable) {
-            craftNote = "pickaxe";
-            craftOnce(mc, p.containerMenu, st -> st.is(Items.WOODEN_PICKAXE));
-            return;
+        boolean tableNear = tablePos != null && mc.level.getBlockState(tablePos).is(Blocks.CRAFTING_TABLE)
+            && p.position().distanceTo(Vec3.atCenterOf(tablePos)) < 8;
+        if (!tableNear) {
+            if (tablePos != null && !mc.level.getBlockState(tablePos).is(Blocks.CRAFTING_TABLE)) craftFail++; // placement did not take
+            tablePos = null; // moved away or gone: a new one is cheaper than walking back
         }
+        int stickPlanks = sticks >= needSticks ? 0 : 2 * (int) Math.ceil((needSticks - sticks) / 4.0);
+        int totalPlanks = needPlanks + stickPlanks + ((tableNear || tables > 0) ? 0 : 4);
 
-        if (tablePos != null && !mc.level.getBlockState(tablePos).is(Blocks.CRAFTING_TABLE)) tablePos = null;
-        if (tablePos != null) { // table is down: step up to it and open it
+        if (planks < totalPlanks)              { craftNote = "planks"; craftOnce(mc, p.inventoryMenu, st -> st.is(ItemTags.PLANKS)); }
+        else if (!tableNear && tables == 0)    { craftNote = "table";  craftOnce(mc, p.inventoryMenu, st -> st.is(Items.CRAFTING_TABLE)); }
+        else if (sticks < needSticks)          { craftNote = "sticks"; craftOnce(mc, p.inventoryMenu, st -> st.is(Items.STICK)); }
+        else if (!tableNear)                   { craftNote = "place";  placeTable(mc); }
+        else {
             Vec3 c = Vec3.atCenterOf(tablePos);
             aimAtPos(p, c);
             if (p.getEyePosition().distanceTo(c) > 3.5) { aiHold("forward", 3); return; }
             craftNote = "open-table";
             mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(c, Direction.UP, tablePos, false));
             craftWait = 15;
-            return;
         }
+    }
 
-        boolean haveTable = tables > 0;
-        int needPlanks = (haveTable ? 0 : 4) + (sticks >= 2 ? 0 : 2) + 3;
-        if (planks < needPlanks) { craftNote = "planks"; craftOnce(mc, p.inventoryMenu, st -> st.is(ItemTags.PLANKS)); }
-        else if (!haveTable)     { craftNote = "table";  craftOnce(mc, p.inventoryMenu, st -> st.is(Items.CRAFTING_TABLE)); }
-        else if (sticks < 2)     { craftNote = "sticks"; craftOnce(mc, p.inventoryMenu, st -> st.is(Items.STICK)); }
-        else                     { craftNote = "place";  placeTable(mc); }
+    // ---- Anti-loop watchdog: no net progress for 30s -> commit to a random heading, swimming if needed ----
+    private static Vec3 wdPos = null;
+    private static int wdTicks = 0;
+    private static int wanderTicks = 0;
+    private static int wdLevel = 0;
+    private static final java.util.Random RNG = new java.util.Random();
+
+    static void tickWatchdog(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        if (wanderTicks > 0) { wanderTicks--; wdTicks = 0; wdPos = p.position(); return; }
+        boolean busy = gatherTarget != null || stage == 2 || stage == 4 || combatTicks > 0 || mc.gui.screen() != null; // digging is NOT busy: repeated digs without progress is the loop to break
+        if (busy || wdPos == null) { wdTicks = 0; wdPos = p.position(); return; }
+        if (++wdTicks < 600) return;
+        wdTicks = 0;
+        if (horizSqr(p.position(), wdPos) >= 8 * 8) { wdLevel = 0; wdPos = p.position(); return; }
+        wdPos = p.position();
+        wanderTicks = 160 + 80 * Math.min(wdLevel, 4);
+        wdLevel++;
+        p.setYRot(RNG.nextFloat() * 360f - 180f);
+        YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("WATCHDOG no progress: wandering {}s (level {})", wanderTicks / 20, wdLevel);
     }
 
     private static boolean isFree(String scan) {
@@ -620,16 +714,18 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     private static boolean turnLeftNext = false;
 
     /** If a wall/drop/lava/water is within 2 blocks ahead: turn to a free side, else dig or turn around. */
-    private static boolean steerAroundObstacle(Minecraft mc) {
+    private static boolean steerAroundObstacle(Minecraft mc) { return steerAroundObstacle(mc, false); }
+    private static boolean steerAroundObstacle(Minecraft mc, boolean allowWater) {
         LocalPlayer p = mc.player;
         ClientLevel lvl = mc.level;
         BlockPos o = p.blockPosition();
         Direction f = p.getDirection();
         String ahead = scanDir(lvl, o, f, 2);
-        if (isFree(ahead)) return false;
+        if (isFree(ahead) || (allowWater && ahead.startsWith("water"))) return false;
 
-        boolean lf = isFree(scanDir(lvl, o, f.getCounterClockWise(), 3));
-        boolean rf = isFree(scanDir(lvl, o, f.getClockWise(), 3));
+        String ls = scanDir(lvl, o, f.getCounterClockWise(), 3), rs = scanDir(lvl, o, f.getClockWise(), 3);
+        boolean lf = isFree(ls) || (allowWater && ls.startsWith("water"));
+        boolean rf = isFree(rs) || (allowWater && rs.startsWith("water"));
         if (lf || rf) {
             boolean goLeft = lf && (!rf || turnLeftNext);
             turnLeftNext = !turnLeftNext;
@@ -695,7 +791,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
 
         // 1. Drowning comes first
-        if (p.isInWater()) {
+        if (p.isInWater() && (p.getAirSupply() < 100 || !(digging || wanderTicks > 0))) {
             lastPath = "water";
             digging = false;
             escapeWater(mc);
@@ -730,8 +826,19 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
 
         // Crafting: stand still near the table; tickCraft drives everything
-        if (craftStarted && !hasPickaxe(p)) {
+        if (stage == 2 || stage == 4) {
             lastPath = "craft";
+            return;
+        }
+
+        if (Math.abs(p.getXRot()) > 25) p.setXRot(0); // never leave the camera staring at the sky or the ground
+
+        if (wanderTicks > 0) {
+            lastPath = "wander";
+            if (!steerAroundObstacle(mc, true)) {
+                aiHold("forward", AI_HOLD_TICKS);
+                aiHold("sprint", AI_HOLD_TICKS);
+            }
             return;
         }
 
@@ -740,8 +847,6 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         // 4. Otherwise follow the model, steering around walls/hazards it can't judge
         boolean forward = false;
         switch (move) {
-            case "left"  -> { look(mc, -45, 0); forward = true; }
-            case "right" -> { look(mc, 45, 0); forward = true; }
             case "flee" -> {
                 if (target != null) { aimAt(mc, target); look(mc, 180, 0); }
                 forward = true;
@@ -925,11 +1030,18 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             }
         }
 
+        if (mc.player != null && mc.gui.screen() == null && playerCommands.getOrDefault("mine", 0) > 0
+                && !mc.mouseHandler.isMouseGrabbed()
+                && mc.hitResult instanceof BlockHitResult bh && bh.getType() == HitResult.Type.BLOCK) {
+            mineBlock(mc, bh.getBlockPos(), bh.getDirection()); // vanilla ignores the attack key without a grabbed mouse
+        }
+
         if (mc.player != null && mc.level != null) {
             tickCombat(mc);
             tickGather(mc);
             tickCraft(mc);
             tickUnstuck(mc);
+            tickWatchdog(mc);
             tickProgress(mc);
         }
 
