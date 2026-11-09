@@ -74,6 +74,12 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.LevelSettings;
+import net.minecraft.world.level.WorldDataConfiguration;
+import net.minecraft.world.level.levelgen.WorldOptions;
+import net.minecraft.world.level.levelgen.presets.WorldPresets;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.entity.animal.Animal;
@@ -310,6 +316,17 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         progLast = pos;
 
         if (AI_TEST) {
+            // Test worlds are copies of old chat-plays sessions: viewers' /attribute commands persist in the save
+            // (tiny max health, tiny scale, ...). Reset them so every run starts from a normal player.
+            String[] reset = {
+                "attribute @s minecraft:max_health base set 20", "attribute @s minecraft:scale base set 1",
+                "attribute @s minecraft:movement_speed base set 0.1", "attribute @s minecraft:jump_strength base set 0.42",
+                "attribute @s minecraft:gravity base set 0.08", "attribute @s minecraft:step_height base set 0.6",
+                "attribute @s minecraft:safe_fall_distance base set 3", "attribute @s minecraft:fall_damage_multiplier base set 1",
+                "attribute @s minecraft:attack_damage base set 1", "effect clear @s",
+                "effect give @s minecraft:instant_health 1 10 true"
+            };
+            if (devTicks >= 10 && devTicks < 10 + reset.length) p.connection.sendCommand(reset[(int) (devTicks - 10)]);
             if (p.isDeadOrDying() || (mc.gui.screen() != null && mc.gui.screen().getClass().getSimpleName().contains("Death"))) {
                 deaths++;
                 p.respawn();
@@ -321,7 +338,6 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 if (devTicks == 60) p.connection.sendCommand("gamerule advance_time false");
                 // These test worlds ship with health regeneration off; turn it on (name differs between versions)
                 if (devTicks == 70) p.connection.sendCommand("gamerule natural_health_regeneration true");
-                if (devTicks == 71) p.connection.sendCommand("gamerule naturalRegeneration true");
             } else {
             if (devTicks == 40) p.connection.sendCommand("difficulty normal");
             if (devTicks == 60) p.connection.sendCommand("time set midnight");
@@ -362,7 +378,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         tickLastPos = pos;
 
         // Dig mode ends when the hold runs out or we got through
-        if (digging && playerCommands.getOrDefault("mine", 0) <= 0) digging = false;
+        if (digging && --digTicksLeft <= 0) digging = false;
         if (stuckOrigin != null && horizSqr(pos, stuckOrigin) > 1.5) { stuckOrigin = null; stuckStage = 0; digging = false; }
 
         if (!pushing || !barelyMoved || p.isInWater() || digging) { stuckTicks = 0; return; }
@@ -381,7 +397,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             case 1 -> aiHold("jump", 10);
             case 2 -> look(mc, 90, 0);
             case 3 -> look(mc, 180, 0);   // net 270 = 90 left of the original heading
-            case 4 -> { look(mc, 90, 0); mc.player.setXRot(0); digging = true; aiHold("mine", DIG_TICKS); aiHold("forward", DIG_TICKS); }
+            case 4 -> { look(mc, 90, 0); startDig(mc.player); }
             default -> stuckStage = 0;
         }
     }
@@ -507,7 +523,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     static void tickGather(Minecraft mc) {
         LocalPlayer p = mc.player;
         Predicate<BlockState> want = gatherWanted();
-        if (want == null || combatTicks > 0 || pickupTicks > 0 || digging || p.isInWater() || mc.gui.screen() != null) { gatherTarget = null; return; }
+        if (want == null || descendMode != 0 || combatTicks > 0 || pickupTicks > 0 || digging || p.isInWater() || mc.gui.screen() != null) { gatherTarget = null; return; }
         if (stage == 1 && countLogs(p) >= GOAL_LOGS) { gatherTarget = null; return; }
         if (stage == 3 && countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL) { gatherTarget = null; return; }
 
@@ -520,7 +536,18 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             gatherSearchCooldown = 20;
             gatherTarget = findBlock(mc, want);
             gatherTicks = 0;
-            if (gatherTarget == null) return;
+            if (gatherTarget == null) {
+                // Nothing minable in sight. For stone that means it is buried: start a staircase down.
+                noStoneTicks += 20;
+                if (stage == 3 && noStoneTicks >= 300 && p.onGround() && descendMode == 0 && hostileCount(mc, 10) == 0) {
+                    descendMode = 1;
+                    descendDir = p.getDirection();
+                    descendStartY = p.getY();
+                    YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("DESCEND start y={} dir={}", (int) p.getY(), descendDir);
+                }
+                return;
+            }
+            noStoneTicks = 0;
         }
 
         if (stage == 3) { // stone only drops with a pickaxe in hand
@@ -539,8 +566,10 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         if (d > 3.4) {
             aiHold("forward", 3);
             if (d > 8) aiHold("sprint", 3);
-        } else {
-            mineBlock(mc, gatherTarget);
+        } else if (mc.hitResult instanceof BlockHitResult bh && bh.getType() == HitResult.Type.BLOCK
+                && p.getEyePosition().distanceTo(Vec3.atCenterOf(bh.getBlockPos())) <= 4.5) {
+            // Break what we can actually see. If dirt covers the target we dig through the dirt, never "x-ray" the stone.
+            mineBlock(mc, bh.getBlockPos(), bh.getDirection());
         }
     }
 
@@ -716,7 +745,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     static void tickWatchdog(Minecraft mc) {
         LocalPlayer p = mc.player;
         if (wanderTicks > 0) { wanderTicks--; wdTicks = 0; wdPos = p.position(); return; }
-        boolean busy = gatherTarget != null || stage == 2 || stage == 4 || combatTicks > 0 || mc.gui.screen() != null; // digging is NOT busy: repeated digs without progress is the loop to break
+        boolean busy = descendMode != 0 || gatherTarget != null || stage == 2 || stage == 4 || combatTicks > 0 || mc.gui.screen() != null; // digging is NOT busy: repeated digs without progress is the loop to break
         if (busy || wdPos == null) { wdTicks = 0; wdPos = p.position(); return; }
         if (++wdTicks < 600) return;
         wdTicks = 0;
@@ -798,6 +827,75 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         look(mc, RNG.nextBoolean() ? 90 : -90, 0);
     }
 
+    // ---- Staircase mining: no exposed stone nearby -> dig down in 1-block steps, then climb back out ----
+    private static int descendMode = 0;            // 0 off, 1 digging down, 2 climbing out
+    private static Direction descendDir = null;
+    private static double descendStartY = 0;
+    private static int noStoneTicks = 0;
+    private static final int MAX_DEPTH = 26;
+
+    private static boolean lavaNear(Minecraft mc, BlockPos c, int r) {
+        for (int dx = -r; dx <= r; dx++) for (int dy = -r; dy <= r; dy++) for (int dz = -r; dz <= r; dz++)
+            if (isLava(mc.level.getBlockState(c.offset(dx, dy, dz)))) return true;
+        return false;
+    }
+
+    static void tickDescend(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        if (descendMode == 0) return;
+        if (combatTicks > 0 || mc.gui.screen() != null) return;
+        if (p.isInWater()) { descendMode = 2; }
+        if (descendMode == 1) {
+            boolean done = countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL;
+            if (done || p.getY() < descendStartY - MAX_DEPTH) { descendMode = 2; return; }
+            selectHotbar(p, st -> st.is(Items.STONE_PICKAXE));
+            if (!p.getMainHandItem().is(Items.STONE_PICKAXE)) selectHotbar(p, st -> st.is(ItemTags.PICKAXES));
+            p.setYRot(descendDir.toYRot());
+            p.setXRot(20);
+            BlockPos ahead = p.blockPosition().relative(descendDir);
+            BlockPos[] cells = { ahead.above(), ahead, ahead.below() };
+            if (lavaNear(mc, ahead.below(), 2)) { descendMode = 2; return; }          // never dig toward lava
+            for (BlockPos c : cells) {
+                var st = mc.level.getBlockState(c);
+                if (!st.getFluidState().isEmpty()) { descendMode = 2; return; }         // water/lava pocket: back off
+                if (!st.isAir()) { mineBlock(mc, c); return; }                          // one block at a time, until it breaks
+            }
+            BlockPos floor = ahead.below(2);
+            if (!isSolid(mc.level, floor, mc.level.getBlockState(floor))) { descendMode = 2; return; } // would drop into a cave
+            aiHold("forward", 3);
+        } else {
+            p.setYRot(descendDir.getOpposite().toYRot());
+            p.setXRot(0);
+            if (p.getY() >= descendStartY - 1) { descendMode = 0; noStoneTicks = 0; return; }
+            aiHold("forward", 3);
+        }
+    }
+
+    private static Direction digDir = null;
+    private static int digTicksLeft = 0;
+
+    static void startDig(LocalPlayer p) {
+        digging = true;
+        digDir = p.getDirection();
+        digTicksLeft = 140;
+    }
+
+    /** Dig through whatever blocks the way: mine the cell ahead at feet then head height (adjacent, so always in line of sight), then step in. */
+    static void tickDig(Minecraft mc) {
+        if (!digging || digDir == null) return;
+        LocalPlayer p = mc.player;
+        if (p.isInWater() || mc.gui.screen() != null) return;
+        p.setYRot(digDir.toYRot());
+        p.setXRot(15);
+        BlockPos ahead = p.blockPosition().relative(digDir);
+        for (BlockPos c : new BlockPos[] { ahead, ahead.above() }) {
+            var st = mc.level.getBlockState(c);
+            if (!st.getFluidState().isEmpty()) { digging = false; return; }   // opened a water/lava pocket: stop
+            if (!st.isAir() && st.getDestroySpeed(mc.level, c) >= 0) { mineBlock(mc, c); return; }
+        }
+        aiHold("forward", 3);
+    }
+
     private static boolean isFree(String scan) {
         return scan.equals("clear") || scan.startsWith("step");
     }
@@ -824,9 +922,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             look(mc, goLeft ? -90 : 90, 0);
         } else if (ahead.startsWith("wall") && !(behindOpen && wdLevel < 2)) {
             // Boxed in with no open way back (or the watchdog already failed twice): tunnel through
-            p.setXRot(0);
-            digging = true;
-            aiHold("mine", DIG_TICKS);
+            startDig(p);
         } else {
             look(mc, 180, 0); // dead end / tunnel: walk back out instead of digging deeper
         }
@@ -925,9 +1021,10 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         // 3b. Keep digging until the block breaks
         if (digging) {
             lastPath = "dig";
-            aiHold("forward", AI_HOLD_TICKS);
             return;
         }
+
+        if (descendMode != 0) { lastPath = "descend"; return; }
 
         // Crafting: stand still near the table; tickCraft drives everything
         if ((stage == 2 || stage == 4) && wanderTicks <= 0) {
@@ -1091,11 +1188,28 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     }
     */
 
+    // ---- Dev: AI_NEWWORLD=1 creates a brand-new survival world with a random seed from the title screen ----
+    private static boolean newWorldRequested = false;
+    private static int titleTicks = 0;
+
+    static void tickNewWorld(Minecraft mc) {
+        if (!"1".equals(System.getenv("AI_NEWWORLD")) || newWorldRequested || mc.level != null) return;
+        if (!(mc.gui.screen() instanceof TitleScreen title)) return;
+        if (++titleTicks < 60) return; // let resource loading settle
+        newWorldRequested = true;
+        String name = "ai-new-" + (System.currentTimeMillis() / 1000);
+        WorldOptions opts = WorldOptions.defaultWithRandomSeed();
+        YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("NEWWORLD {} seed={}", name, opts.seed());
+        LevelSettings ls = new LevelSettings(name, GameType.SURVIVAL, LevelSettings.DifficultySettings.DEFAULT, true, WorldDataConfiguration.DEFAULT);
+        mc.createWorldOpenFlows().createFreshLevel(name, ls, opts, WorldPresets::createNormalWorldDimensions, title);
+    }
+
     @SubscribeEvent
     static void onClientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
 
         if (mc == null) return;
+        tickNewWorld(mc);
         if (!aiThinking && mc.player != null) askAI();
         if (!subscribed) subscribe();
 
@@ -1140,10 +1254,19 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             mineBlock(mc, bh.getBlockPos(), bh.getDirection()); // vanilla ignores the attack key without a grabbed mouse
         }
 
+        if (mc.player != null && mc.level != null && combatTicks <= 0 && !mc.player.isUsingItem()
+                && (playerCommands.getOrDefault("mine", 0) > 0 || digging)) {
+            // Digging by hand is painfully slow and drops nothing from stone: always hold the best pickaxe while mining
+            selectHotbar(mc.player, st -> st.is(Items.STONE_PICKAXE));
+            if (!mc.player.getMainHandItem().is(Items.STONE_PICKAXE)) selectHotbar(mc.player, st -> st.is(ItemTags.PICKAXES));
+        }
+
         if (mc.player != null && mc.level != null) {
             tickCombat(mc);
             tickSafety(mc);
             tickGather(mc);
+            tickDescend(mc);
+            tickDig(mc);
             tickEat(mc);
             tickCraft(mc);
             tickUnstuck(mc);
