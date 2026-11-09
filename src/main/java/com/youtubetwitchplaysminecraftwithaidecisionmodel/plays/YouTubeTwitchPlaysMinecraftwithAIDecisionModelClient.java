@@ -315,6 +315,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         progPath += Math.sqrt(horizSqr(pos, progLast));
         progLast = pos;
 
+        if (devTicks == 1) YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("ENV AI_TEST={} AI_STAGE={} AI_MODE={}", System.getenv("AI_TEST"), System.getenv("AI_STAGE"), System.getenv("AI_MODE"));
         if (AI_TEST) {
             // Test worlds are copies of old chat-plays sessions: viewers' /attribute commands persist in the save
             // (tiny max health, tiny scale, ...). Reset them so every run starts from a normal player.
@@ -326,6 +327,13 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 "attribute @s minecraft:attack_damage base set 1", "effect clear @s",
                 "effect give @s minecraft:instant_health 1 10 true"
             };
+            String st0 = System.getenv("AI_STAGE");
+            if (st0 != null && !st0.isEmpty()) {
+                if (devTicks == 5) { stage = Integer.parseInt(st0); YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("STAGE forced to {}", stage); }
+                String[] gear = { "give @s minecraft:stone_pickaxe", "give @s minecraft:stone_sword", "give @s minecraft:oak_planks 16",
+                                  "give @s minecraft:oak_log 8", "give @s minecraft:cooked_beef 16", "give @s minecraft:furnace" };
+                if (devTicks >= 6 && devTicks < 6 + gear.length) p.connection.sendCommand(gear[(int) (devTicks - 6)]);
+            }
             if (devTicks >= 10 && devTicks < 10 + reset.length) p.connection.sendCommand(reset[(int) (devTicks - 10)]);
             if (p.isDeadOrDying() || (mc.gui.screen() != null && mc.gui.screen().getClass().getSimpleName().contains("Death"))) {
                 deaths++;
@@ -465,16 +473,18 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     private static BlockPos findBlock(Minecraft mc, Predicate<BlockState> want) {
         LocalPlayer p = mc.player;
         BlockPos o = p.blockPosition();
+        boolean ore = stage == 5;
+        int r = ore ? 10 : 20, dyMin = ore ? -4 : -1, dyMax = ore ? 4 : 3; // surface stages never target blocks far below (= digging down)
         BlockPos best = null;
         double bestD = Double.MAX_VALUE;
-        for (int dx = -20; dx <= 20; dx++) {
-            for (int dz = -20; dz <= 20; dz++) {
-                for (int dy = -1; dy <= 3; dy++) { // reachable from the ground; never far below (that means digging down)
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dz = -r; dz <= r; dz++) {
+                for (int dy = dyMin; dy <= dyMax; dy++) {
                     BlockPos pos = o.offset(dx, dy, dz);
                     if (gatherBlacklist.contains(pos)) continue;
                     if (!want.test(mc.level.getBlockState(pos))) continue;
                     double d = pos.distSqr(o);
-                    if (d < bestD) { bestD = d; best = pos; }
+                    if (d < bestD && !(ore && lavaNear(mc, pos, 2))) { bestD = d; best = pos; }
                 }
             }
         }
@@ -503,12 +513,14 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
     // ---- Stage machine: 1 logs, 2 craft wooden pickaxe, 3 stone, 4 craft stone tools, 5 done (next: iron)
     private static int stage = 1;
+    private static final int IRON_GOAL = 4;
     private static final int COBBLE_GOAL = 13; // stone pickaxe 3 + sword 2 + furnace 8
     private static final java.util.ArrayDeque<net.minecraft.world.item.Item> craftQueue = new java.util.ArrayDeque<>();
 
     private static Predicate<BlockState> gatherWanted() {
         if (stage == 1) return st -> st.is(BlockTags.LOGS);
         if (stage == 3) return st -> st.is(Blocks.STONE);
+        if (stage == 5) return st -> st.is(BlockTags.IRON_ORES);
         return null;
     }
 
@@ -523,9 +535,10 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     static void tickGather(Minecraft mc) {
         LocalPlayer p = mc.player;
         Predicate<BlockState> want = gatherWanted();
-        if (want == null || descendMode != 0 || combatTicks > 0 || pickupTicks > 0 || digging || p.isInWater() || mc.gui.screen() != null) { gatherTarget = null; return; }
+        if (want == null || descendMode == 1 || descendMode == 2 || combatTicks > 0 || pickupTicks > 0 || digging || p.isInWater() || mc.gui.screen() != null) { gatherTarget = null; return; }
         if (stage == 1 && countLogs(p) >= GOAL_LOGS) { gatherTarget = null; return; }
         if (stage == 3 && countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL) { gatherTarget = null; return; }
+        if (stage == 5 && countItems(p, st -> st.is(Items.RAW_IRON)) >= IRON_GOAL) { gatherTarget = null; return; }
 
         if (gatherTarget != null && (!want.test(mc.level.getBlockState(gatherTarget)) || ++gatherTicks > 400)) {
             if (gatherTicks > 400) gatherBlacklist.add(gatherTarget); // could not reach it in 20s: give up on this one
@@ -539,10 +552,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             if (gatherTarget == null) {
                 // Nothing minable in sight. For stone that means it is buried: start a staircase down.
                 noStoneTicks += 20;
-                if (stage == 3 && noStoneTicks >= 300 && p.onGround() && descendMode == 0 && hostileCount(mc, 10) == 0) {
+                if ((stage == 3 || stage == 5) && noStoneTicks >= 300 && p.onGround() && descendMode == 0 && hostileCount(mc, 10) == 0) {
                     descendMode = 1;
                     descendDir = p.getDirection();
                     descendStartY = p.getY();
+                    descendGoalY = p.getY() - 25; // iron: dig down to where ore is common, then tunnel
                     YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("DESCEND start y={} dir={}", (int) p.getY(), descendDir);
                 }
                 return;
@@ -675,6 +689,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             craftQueue.add(Items.STONE_SWORD);
             craftQueue.add(Items.FURNACE);
         }
+        if (stage == 5 && countItems(p, st -> st.is(Items.RAW_IRON)) >= IRON_GOAL) { stage = 6; descendMode = 0; craftNote = "iron-done"; }
         if (stage != 2 && stage != 4) return;
 
         net.minecraft.world.item.Item head = craftQueue.peek();
@@ -830,7 +845,8 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     // ---- Staircase mining: no exposed stone nearby -> dig down in 1-block steps, then climb back out ----
     private static int descendMode = 0;            // 0 off, 1 digging down, 2 climbing out
     private static Direction descendDir = null;
-    private static double descendStartY = 0;
+    private static double descendStartY = 0, descendGoalY = 0;
+    private static Vec3 tunnelOrigin = null;
     private static int noStoneTicks = 0;
     private static final int MAX_DEPTH = 26;
 
@@ -846,7 +862,8 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         if (combatTicks > 0 || mc.gui.screen() != null) return;
         if (p.isInWater()) { descendMode = 2; }
         if (descendMode == 1) {
-            boolean done = countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL;
+            boolean done = stage == 3 && countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL;
+            if (stage == 5 && p.getY() <= descendGoalY) { descendMode = 3; tunnelOrigin = p.position(); return; } // deep enough: strip-mine
             if (done || p.getY() < descendStartY - MAX_DEPTH) { descendMode = 2; return; }
             selectHotbar(p, st -> st.is(Items.STONE_PICKAXE));
             if (!p.getMainHandItem().is(Items.STONE_PICKAXE)) selectHotbar(p, st -> st.is(ItemTags.PICKAXES));
@@ -862,6 +879,24 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             }
             BlockPos floor = ahead.below(2);
             if (!isSolid(mc.level, floor, mc.level.getBlockState(floor))) { descendMode = 2; return; } // would drop into a cave
+            aiHold("forward", 3);
+        } else if (descendMode == 3) {
+            if (stage != 5) { descendMode = 0; return; }
+            if (gatherTarget != null) return; // ore in sight: tickGather walks to it and mines it
+            if (horizSqr(p.position(), tunnelOrigin) > 40 * 40) { // long enough: bend the tunnel to cover new ground
+                descendDir = descendDir.getClockWise();
+                tunnelOrigin = p.position();
+            }
+            selectHotbar(p, st -> st.is(Items.STONE_PICKAXE));
+            p.setYRot(descendDir.toYRot());
+            p.setXRot(10);
+            BlockPos ahead = p.blockPosition().relative(descendDir);
+            if (lavaNear(mc, ahead, 2)) { descendDir = descendDir.getClockWise(); return; }
+            for (BlockPos c : new BlockPos[] { ahead, ahead.above() }) {
+                var st = mc.level.getBlockState(c);
+                if (!st.getFluidState().isEmpty()) { descendDir = descendDir.getClockWise(); return; }
+                if (!st.isAir() && st.getDestroySpeed(mc.level, c) >= 0) { mineBlock(mc, c); return; }
+            }
             aiHold("forward", 3);
         } else {
             p.setYRot(descendDir.getOpposite().toYRot());
@@ -891,8 +926,16 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         for (BlockPos c : new BlockPos[] { ahead, ahead.above() }) {
             var st = mc.level.getBlockState(c);
             if (!st.getFluidState().isEmpty()) { digging = false; return; }   // opened a water/lava pocket: stop
-            if (!st.isAir() && st.getDestroySpeed(mc.level, c) >= 0) { mineBlock(mc, c); return; }
+            if (!st.isAir() && st.getDestroySpeed(mc.level, c) >= 0) {
+                boolean ok = mc.gameMode.continueDestroyBlock(c, Direction.getApproximateNearest(p.getEyePosition().subtract(Vec3.atCenterOf(c))));
+                if (ok) p.swing(InteractionHand.MAIN_HAND);
+                if (devTicks % 40 == 0) YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("DIGDBG cell={} block={} speed={} ok={} held={} dist={} destroying={}",
+                    c.toShortString(), BuiltInRegistries.BLOCK.getKey(st.getBlock()).getPath(), st.getDestroySpeed(mc.level, c), ok,
+                    p.getMainHandItem().getItem(), String.format("%.1f", p.getEyePosition().distanceTo(Vec3.atCenterOf(c))), mc.gameMode.isDestroying());
+                return;
+            }
         }
+        if (devTicks % 40 == 0) YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("DIGDBG cells clear -> forward ahead={} above={}", mc.level.getBlockState(ahead).getBlock(), mc.level.getBlockState(ahead.above()).getBlock());
         aiHold("forward", 3);
     }
 
