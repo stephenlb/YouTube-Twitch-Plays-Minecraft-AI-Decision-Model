@@ -1,5 +1,31 @@
 package com.youtubetwitchplaysminecraftwithaidecisionmodel.plays;
 
+
+/* 
+    Next Stream
+    Build AI Agent that Runs PC Remotely
+    SQL Tutorials
+    Build custom Terminal Emulator
+    Stephen Learns Haskell
+    Stephen Learns Godot 
+    AI Plays 5 nights at freddys
+    Stephen learns to Fly
+    Stephen Does Day Trading
+*/
+
+
+/* 
+    MOD
+    MOD
+    MOD
+    MOD
+    NeoForge framework for Java Editoin Minecraft
+    Java Mod - 
+    PubNub - YouTube Twtich Chat 
+    System One Local Model - Ai
+
+*/
+
 // Decision Models 
 // Decision Models 
 // Decision Models 
@@ -74,6 +100,7 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.LevelSettings;
@@ -196,7 +223,9 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
 
     private static List<String> ACTION_COMMANDS = List.of(
         "swap", "drop", "use", "attack", "pick",
-        "inventory", "chat", "escape",
+        "inventory",
+        //"chat",
+        "escape",
         "look up", "look down", "look left", "look right",
         "turn around", "slot", "next item", "prev item"
     );
@@ -434,6 +463,10 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             // Chasing something we cannot get closer to (ledge, ravine, fence): after 5s without progress, ignore it
             if (!(combatTarget instanceof Enemy)) {
                 if (huntLast == null) huntLast = p.position();
+                if (huntStall % 40 == 20 && horizSqr(p.position(), huntLast) < 1.0) { // stuck behind a tree or ledge: sidestep and hop
+                    aiHold(RNG.nextBoolean() ? "left" : "right", 15);
+                    aiHold("jump", 10);
+                }
                 if (++huntStall >= 100) {
                     if (horizSqr(p.position(), huntLast) < 1.0) {
                         ignoredAnimals.add(combatTarget.getUUID());
@@ -492,7 +525,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         LocalPlayer p = mc.player;
         BlockPos o = p.blockPosition();
         boolean ore = stage == 5;
-        int r = ore ? 10 : 20, dyMin = ore ? -4 : -1, dyMax = ore ? 4 : 3; // surface stages never target blocks far below (= digging down)
+        int r = ore ? 10 : 20, dyMin = ore ? -2 : 0, dyMax = ore ? 4 : 3; // surface stages never target anything below feet level (that means digging a shaft)
         BlockPos best = null;
         double bestD = Double.MAX_VALUE;
         for (int dx = -r; dx <= r; dx++) {
@@ -532,8 +565,11 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     // ---- Stage machine: 1 logs, 2 craft wooden pickaxe, 3 stone, 4 craft stone tools, 5 done (next: iron)
     private static int stage = 1;
     private static final int IRON_GOAL = 5; // iron pickaxe 3 + sword 2
-    private static final int COBBLE_GOAL = 13; // stone pickaxe 3 + sword 2 + furnace 8
-    private static final java.util.ArrayDeque<net.minecraft.world.item.Item> craftQueue = new java.util.ArrayDeque<>();
+    private static final int COBBLE_GOAL = 20; // 3 stone pickaxes 9 + sword 2 + furnace 8
+    /** Craft goal: have at least {@code count} of {@code item} in the inventory. */
+    private record Want(net.minecraft.world.item.Item item, int count) {}
+    private static final java.util.ArrayDeque<Want> craftQueue = new java.util.ArrayDeque<>();
+    private static void want(net.minecraft.world.item.Item item, int count) { craftQueue.add(new Want(item, count)); }
 
     private static Predicate<BlockState> gatherWanted() {
         if (stage == 1) return st -> st.is(BlockTags.LOGS);
@@ -592,11 +628,20 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
                 // Nothing minable in sight. For stone that means it is buried: start a staircase down.
                 noStoneTicks += 20;
                 if ((stage == 3 || stage == 5) && noStoneTicks >= 300 && p.onGround() && descendMode == 0 && hostileCount(mc, 10) == 0) {
+                    Direction best = null; // need solid ground directly ahead (not a cliff edge) to carve steps into
+                    for (Direction d : Direction.Plane.HORIZONTAL) {
+                        BlockPos a = p.blockPosition().relative(d);
+                        if (isSolid(mc.level, a.below(), mc.level.getBlockState(a.below())) && isSolid(mc.level, a.below(2), mc.level.getBlockState(a.below(2)))) {
+                            best = d;
+                            if (d == p.getDirection()) break;
+                        }
+                    }
+                    if (best == null) { noStoneTicks = 200; return; } // retry shortly, after wandering somewhere flatter
                     descendMode = 1;
-                    descendDir = p.getDirection();
+                    descendDir = best;
                     descendStartY = p.getY();
-                    descendGoalY = p.getY() - 25; // iron: dig down to where ore is common, then tunnel
-                    YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("DESCEND start y={} dir={}", (int) p.getY(), descendDir);
+                    descendGoalY = p.getY() > 42 ? 30 : p.getY() - 10; // iron is common around y=16..56: dig down to ~y30, then strip-mine
+                    YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("DESCEND start y={} dir={} goalY={}", (int) p.getY(), descendDir, (int) descendGoalY);
                 }
                 return;
             }
@@ -622,6 +667,12 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         } else if (mc.hitResult instanceof BlockHitResult bh && bh.getType() == HitResult.Type.BLOCK
                 && p.getEyePosition().distanceTo(Vec3.atCenterOf(bh.getBlockPos())) <= 4.5) {
             // Break what we can actually see. If dirt covers the target we dig through the dirt, never "x-ray" the stone.
+            // But never dig downwards into a shaft: blocks below our feet are the staircase's job (it has steps and a way out).
+            if (bh.getBlockPos().getY() < p.blockPosition().getY() - (stage == 5 ? 1 : 0)) {
+                gatherBlacklist.add(gatherTarget);
+                gatherTarget = null;
+                return;
+            }
             mineBlock(mc, bh.getBlockPos(), bh.getDirection());
         }
     }
@@ -743,8 +794,8 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         if (ingots >= IRON_GOAL) {
             if (inFurnace) mc.gui.setScreen(null);
             stage = 7;
-            craftQueue.add(Items.IRON_PICKAXE);
-            craftQueue.add(Items.IRON_SWORD);
+            want(Items.IRON_PICKAXE, 1);
+            want(Items.IRON_SWORD, 1);
             craftFail = 0;
             YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("SMELT done: {} ingots -> stage 7", ingots);
             return;
@@ -756,7 +807,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             if (furnacePos == null) {
                 if (countItems(p, st -> st.is(Items.FURNACE)) == 0) { // no furnace item: go back and craft one
                     craftQueue.clear();
-                    craftQueue.add(Items.FURNACE);
+                    want(Items.FURNACE, 1);
                     stage = 4;
                     return;
                 }
@@ -793,7 +844,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
         if (input.isEmpty() && raw == 0) { // nothing left to smelt but not enough ingots (a stack was lost): accept what we have
             mc.gui.setScreen(null);
-            if (ingots >= 3) { stage = 7; craftQueue.add(Items.IRON_PICKAXE); if (ingots >= 5) craftQueue.add(Items.IRON_SWORD); }
+            if (ingots >= 3) { stage = 7; want(Items.IRON_PICKAXE, 1); if (ingots >= 5) want(Items.IRON_SWORD, 1); }
             return;
         }
 
@@ -847,7 +898,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             digging = false;
             gatherTarget = null;
             int woodish = countLogs(p) + countItems(p, st -> st.is(ItemTags.PLANKS)) / 4;
-            if (woodish >= 2) { stage = 2; craftQueue.add(Items.WOODEN_PICKAXE); } else { stage = 1; }
+            if (woodish >= 2) { stage = 2; want(Items.WOODEN_PICKAXE, 1); } else { stage = 1; }
             YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("GUARD no pickaxe -> back to stage {}", stage);
             return;
         }
@@ -855,35 +906,45 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             craftQueue.clear();
             descendMode = 0;
             gatherTarget = null;
-            if (countItems(p, st -> st.is(Items.COBBLESTONE)) >= 3) { stage = 4; craftQueue.add(Items.STONE_PICKAXE); } else { stage = 3; }
+            if (countItems(p, st -> st.is(Items.COBBLESTONE)) >= 3) { stage = 4; want(Items.STONE_PICKAXE, Math.max(1, Math.min(3, countItems(p, st -> st.is(Items.COBBLESTONE)) / 3))); /* spares: a stone pickaxe breaks after ~130 blocks and the staircase alone needs ~150 */ } else { stage = 3; }
             YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("GUARD no stone pickaxe -> back to stage {}", stage);
             return;
         }
 
         // Stage transitions
-        if (stage == 1 && countLogs(p) >= GOAL_LOGS) { stage = 2; craftQueue.add(Items.WOODEN_PICKAXE); }
+        if (stage == 1 && countLogs(p) >= GOAL_LOGS) { stage = 2; want(Items.WOODEN_PICKAXE, 1); }
         if (stage == 3 && countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL) {
             stage = 4;
-            craftQueue.add(Items.STONE_PICKAXE);
-            craftQueue.add(Items.STONE_SWORD);
-            craftQueue.add(Items.FURNACE);
+            want(Items.STONE_PICKAXE, 3); /* spares: a stone pickaxe breaks after ~130 blocks and the staircase alone needs ~150 */
+            want(Items.STONE_SWORD, 1);
+            want(Items.FURNACE, 1);
         }
         if (stage == 5 && countItems(p, st -> st.is(Items.RAW_IRON)) >= IRON_GOAL) { stage = 6; descendMode = 0; craftNote = "iron-done"; }
         if (stage != 2 && stage != 4 && stage != 7) return;
 
-        net.minecraft.world.item.Item head = craftQueue.peek();
-        if (head != null) {
-            final net.minecraft.world.item.Item h0 = head;
-            if (countItems(p, st -> st.is(h0)) > 0) { craftQueue.poll(); head = craftQueue.peek(); }
+        Want w = craftQueue.peek();
+        if (w != null) {
+            final Want w0 = w;
+            if (countItems(p, st -> st.is(w0.item())) >= w0.count()) { craftQueue.poll(); w = craftQueue.peek(); }
         }
-        if (head == null) {
+        if (w == null) {
             if (inTable) mc.gui.setScreen(null);
             stage++;
             craftNote = "stage" + stage;
             return;
         }
-        final net.minecraft.world.item.Item goal = head;
+        final net.minecraft.world.item.Item goal = w.item();
         if (craftFail > 12) { // stuck on something location-dependent: step somewhere else and try again
+            int wood = countLogs(p) + countItems(p, st -> st.is(ItemTags.PLANKS)) / 4;
+            if (wood < 2 && countItems(p, st -> st.is(Items.STICK)) < 3) { // out of wood: tools keep breaking, so go chop more
+                craftQueue.clear();
+                if (inTable) mc.gui.setScreen(null);
+                stage = 1;
+                craftFail = 0;
+                tablePos = null;
+                YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("GUARD out of wood -> back to stage 1");
+                return;
+            }
             craftNote = "retry-elsewhere";
             if (inTable) mc.gui.setScreen(null);
             craftFail = 6;
@@ -901,7 +962,12 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
 
         int needSticks = 0, needPlanks = 0;
-        for (net.minecraft.world.item.Item it : craftQueue) { int[] c = cost(it); needPlanks += c[0]; needSticks += c[1]; }
+        for (Want x : craftQueue) { // everything still missing, not just the head
+            int missing = Math.max(0, x.count() - countItems(p, st -> st.is(x.item())));
+            int[] c = cost(x.item());
+            needPlanks += c[0] * missing;
+            needSticks += c[1] * missing;
+        }
         int planks = countItems(p, st -> st.is(ItemTags.PLANKS));
         int sticks = countItems(p, st -> st.is(Items.STICK));
         int tables = countItems(p, st -> st.is(Items.CRAFTING_TABLE));
@@ -1027,7 +1093,9 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         LocalPlayer p = mc.player;
         if (!p.onGround() || p.isInWater() || !mc.options.keyUp.isDown()) return;
         String ahead = scanDir(mc.level, p.blockPosition(), p.getDirection(), 2);
-        boolean deadly = ahead.startsWith("lava") || ahead.startsWith("drop3") || ahead.startsWith("drop4") || ahead.startsWith("drop5");
+        boolean drop = ahead.startsWith("drop3") || ahead.startsWith("drop4") || ahead.startsWith("drop5");
+        // Staircase/tunnel/dig modes carve their own steps and check lava+fluids themselves; the freshly dug hole is not a hazard
+        boolean deadly = ahead.startsWith("lava") || (drop && descendMode == 0 && !digging);
         if (!deadly) return;
         safetyCancels++;
         playerCommands.put("forward", 0);
@@ -1044,7 +1112,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     private static double descendStartY = 0, descendGoalY = 0;
     private static Vec3 tunnelOrigin = null;
     private static int noStoneTicks = 0;
-    private static final int MAX_DEPTH = 26;
+    private static final int MAX_DEPTH = 90;
 
     private static boolean lavaNear(Minecraft mc, BlockPos c, int r) {
         for (int dx = -r; dx <= r; dx++) for (int dy = -r; dy <= r; dy++) for (int dz = -r; dz <= r; dz++)
@@ -1061,7 +1129,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         LocalPlayer p = mc.player;
         if (descendMode == 0) return;
         if (combatTicks > 0 || mc.gui.screen() != null) return;
-        if (p.isInWater()) { abortDescend("water"); }
+        if (p.isInWater() && descendMode == 1) { abortDescend("water"); } // flooded shaft: stop digging down and climb out
         if (descendMode == 1) {
             boolean done = stage == 3 && countItems(p, st -> st.is(Items.COBBLESTONE)) >= COBBLE_GOAL;
             if (stage == 5 && p.getY() <= descendGoalY) { descendMode = 3; tunnelOrigin = p.position(); return; } // deep enough: strip-mine
@@ -1080,6 +1148,13 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
             }
             BlockPos floor = ahead.below(2);
             if (!isSolid(mc.level, floor, mc.level.getBlockState(floor))) { // would drop into a cave
+                if (stage == 5 && p.getY() <= 56) { // already at iron depth and a cave opened up: strip-mine from here, away from the cave
+                    YouTubeTwitchPlaysMinecraftwithAIDecisionModel.LOGGER.info("DESCEND cave at y={} -> tunnel here", (int) p.getY());
+                    descendDir = descendDir.getClockWise();
+                    descendMode = 3;
+                    tunnelOrigin = p.position();
+                    return;
+                }
                 abortDescend("cave-floor floor=" + BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(floor).getBlock()).getPath()
                     + "@" + floor.toShortString() + " P=" + p.blockPosition().toShortString() + " dir=" + descendDir
                     + " ahead=" + BuiltInRegistries.BLOCK.getKey(mc.level.getBlockState(ahead).getBlock()).getPath()
@@ -1196,6 +1271,20 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
     }
 
+    // ---- Humans watch this too: give the player Night Vision on world load and after every respawn ----
+    private static LocalPlayer nvPlayer = null;
+    private static int nvTries = 0, nvCooldown = 0;
+
+    static void tickNightVision(Minecraft mc) {
+        LocalPlayer p = mc.player;
+        if (p != nvPlayer) { nvPlayer = p; nvTries = 0; nvCooldown = 40; } // new player entity: fresh world or respawn
+        if (p.hasEffect(MobEffects.NIGHT_VISION)) { nvTries = 0; return; }
+        if (nvCooldown-- > 0 || nvTries >= 3) return; // needs cheats; do not spam errors where commands are not allowed
+        nvTries++;
+        nvCooldown = 100;
+        p.connection.sendCommand("effect give @s minecraft:night_vision infinite 0 true");
+    }
+
     private static boolean isFree(String scan) {
         return scan.equals("clear") || scan.startsWith("step");
     }
@@ -1281,7 +1370,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
 
         // 1. Drowning comes first
-        if (p.isInWater() && (p.getAirSupply() < 100 || !(digging || wanderTicks > 0))) {
+        if (p.isInWater() && (p.getAirSupply() < 100 || !(digging || wanderTicks > 0 || descendMode != 0))) {
             lastPath = "water";
             digging = false;
             escapeWater(mc);
@@ -1461,13 +1550,24 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
     }
 
     private static final Set<String> SLASH_COMMANDS = Set.of(
-        //"/execute",
-        "/tp", "/weather", "/give",
-        "/summon", "/add", "/gamemode",
-        "/time", "/effect", 
-        "/attribute", "/kill",
-        "/seed", "/gamerule", //, "/particle",
-        "/playsound"//, "/worldborder",
+        "/execute",
+        //"/tp",
+        //"/summon",
+        //"/gamemode",
+        "/weather",
+        "/give",
+        "/add", 
+        "/time",
+        "/effect", 
+        "/attribute",
+        "/kill",
+        "/kick",
+        "/item",
+        "/seed",
+        "/gamerule", //, "/particle",
+        "/playsound",//, "/worldborder",
+        "/clear",
+        "/title"
         // , "/title", "/data"
         //"/fill", "/setblock"
         // "/setblock",
@@ -1563,6 +1663,7 @@ public class YouTubeTwitchPlaysMinecraftwithAIDecisionModelClient {
         }
 
         if (mc.player != null && mc.level != null) {
+            tickNightVision(mc);
             tickCombat(mc);
             tickSafety(mc);
             tickGather(mc);
